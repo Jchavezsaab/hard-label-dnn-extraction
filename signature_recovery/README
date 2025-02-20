@@ -1,0 +1,59 @@
+This subdirectory of the code demonstrates the ability of an adversary to recover the
+(unsigned) weight vector for each layer of a ReLU neural network assuming that all prior
+layers have been perfectly extracted.
+
+The attack consists of three steps:
+1. Finding dual points: first, we search for dual points (as defined in the paper: inputs x that are both on the decision boundary and also have some neuron with value identically zero)
+2. Clustering dual points: we then group together these dual points to form collections that all correspond to the same neuron
+3. Recovering weight vectors: finally, we use these clusters to recover actual value of the weights
+
+CAUTION: As we say in the paper, the purpose of this code is to prove that the ideas described in the papere are effective, not to be an actual attack. As such, throughout this code 
+
+
+## Find dual points
+
+To begin, run the script
+
+```
+python3 find_dual_points.py
+```
+
+This will identify 10,000 dual points each time you run it. If you want more, you can run this script in a loop to gather however many you need. For complete extraction of the large model described in our paper, you'll need 10 million dual points.
+
+By default the code will run with the `USE_GRADIENT` variable assigned to true. This will significantly improve efficiency and numerical stability by using autograd to directly compute the value of the gradient instead of relying on finite differences.
+
+Unlike the prior repository (https://github.com/google-research/cryptanalytic-model-extraction) that spends a lot of time handling problems with numerical instability, this USE_GRADIENT flag is expected to be set to true. Setting the value to false can help convince the reader that we're not cheating and doing anything mathematically impossible, but rather just getting a bunch of speed and numerical stability for cheap.
+
+This step needs to be run only once for all layers in the model.
+
+
+## Cluster dual points
+
+The second step is to cluster together dual points to find those with common shared neurons. This step needs to be executed once for each layer you want to extract.
+
+To run for the first layer, for example, you should run
+
+```
+python3 cluster_dual_points.py 0
+```
+
+This code internally cheating by just directly looking at the white-box to determine the neuron assignment of each dual point. That's because this step of the attack is quadratic in runtime if you implement the proper clustering algorithm, which while technically polynomial, would take esentially forever on a real computer.
+
+If you have esentially forever, you can run that full attack as follows:
+
+```
+python3 cluster_dual_points.py 0 slow
+```
+
+
+## Recover weights
+
+Finally, you can run the weight recovery algorithm.
+
+```
+python3 recover_weights.py 0
+```
+
+If you get the error `Not enough to fully extract` for any neuron then this means that the attack wasn't able to recover a fully diverse set dual points that cover both the positive and negative side of each input neuron. The solution is to gather more dual points, and re-cluster them.
+
+With default arguments for the tiny model, the code above should be able to recover all neurons on layer 0, like 90% of neurons on layer 1, 25% of neurons on layer 2, and none of the neurons on layer 3. As we show in our paper, you will need roughly 1e3, 1e5, 3e5, and 3e6 dual points to recover all neurons on each layer for the full model.
