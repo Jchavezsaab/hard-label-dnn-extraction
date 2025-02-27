@@ -23,10 +23,12 @@ def getSavePath(modelname, layerID, neuronID, runID=None, mkdir=True):
     """mkdir: If `True` the directory will be deleted if it already exists."""
     from pathlib import Path
 
-    if not runID:
-        runID = getFormattedTimestamp()
+    if runID:
+        runID = '_'+runID
+    else:
+        runID = ''
 
-    pathName = f"results/model_{modelname}_{runID}/layerID_{layerID}/neuronID_{neuronID}/"
+    pathName = f"results/model_{modelname.split('.')[0]}{runID}/layerID_{layerID}/neuronID_{neuronID}/"
 
     if mkdir:
         if os.path.exists(pathName): shutil.rmtree(pathName, ignore_errors=True)
@@ -78,7 +80,7 @@ def parseArguments(argv=None):
                 'nExp': 400,
                 'analyzeWiggleSensitivity': 'False',
                 'analyzeSpeed': 'False',
-                'handlePrevLayerToggles': 'False',
+                'handlePrevLayerToggles': 'True',
                 'nToggles': 1,
                 'nDebug': 'False',
                 'filepath_load_x0': '', 

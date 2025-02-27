@@ -1,17 +1,12 @@
 # Imports
-import sys
 import os
-from os.path import dirname, abspath
-SCRIPT_DIR = dirname(dirname(abspath(__file__)))
-sys.path.append(os.path.dirname(SCRIPT_DIR))
-# perform imports from parent directory
 import sign_recovery
 
 # ========== Global Settings ========== #
-model_name               = "cifar10_3x256_64_10_float64" # Name of the model to be analyzed (for labeling of output files)
+model_name               = "cifar10_3x256_64_10_float64" # Name of the model to be analyzed
 model_path               = f"../data/{model_name}.keras" # Path to the .keras file containing the model
-duals_path                 = f"../data/critical_points_{model_name}" # Path to precomputed dual points
-LAYERIDS                 = 1, # layer IDs to analyze
+duals_path                 = f"../data/dual_points_{model_name}" # Path to precomputed dual points
+LAYERIDS                 = 1,2,3,4 # layer IDs to analyze
 NEURONIDS                = range(256) # neuron IDs to analyze
 analyzeWiggleSensitivity  = 'True' # Record the sensitivity ti the wiggle at the target layer
 analyzeSpeed              = 'True' # Record the rate of change of future layer neurons

@@ -697,7 +697,7 @@ def main(argv):
     # Set parameters
     # ---------------------------------------------------
     eps= 1e-6
-    tol= 1e-9
+    tol= 1e-6
     analyze_wiggle_sensitivity = eval(args.analyzeWiggleSensitivity)
     analyze_speed = eval(args.analyzeSpeed)
     handle_previous_layer_toggles = eval(args.handlePrevLayerToggles)
