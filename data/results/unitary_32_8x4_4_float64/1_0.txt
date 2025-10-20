@@ -1,0 +1,27 @@
+L 1, N 0: Experiments 0/0, votes+ 0, votes- 0, confidence 0.0
+L 1, N 0: Experiments 1/1, votes+ 1, votes- 0, confidence -0.5
+L 1, N 0: Experiments 2/2, votes+ 2, votes- 0, confidence -1.0
+L 1, N 0: Experiments 3/3, votes+ 3, votes- 0, confidence -1.5
+analyzeDualPoint: walkToDecisionPlaneBend_whitebox: Walked too far without finding a bend.
+L 1, N 0: Experiments 3/4, votes+ 3, votes- 0, confidence -1.5
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 1, N 0: Experiments 3/5, votes+ 3, votes- 0, confidence -1.5
+L 1, N 0: Experiments 4/6, votes+ 4, votes- 0, confidence -2.0
+L 1, N 0: Experiments 5/7, votes+ 5, votes- 0, confidence -2.5
+L 1, N 0: Experiments 6/8, votes+ 6, votes- 0, confidence -3.0
+L 1, N 0: Experiments 7/9, votes+ 7, votes- 0, confidence -3.5
+L 1, N 0: Experiments 8/10, votes+ 8, votes- 0, confidence -4.0
+analyzeDualPoint: walkToDecisionPlaneBend_whitebox: Walked too far without finding a bend.
+L 1, N 0: Experiments 8/11, votes+ 8, votes- 0, confidence -4.0
+L 1, N 0: Experiments 9/12, votes+ 9, votes- 0, confidence -4.5
+L 1, N 0: Experiments 10/13, votes+ 10, votes- 0, confidence -5.0
+L 1, N 0: Experiments 11/14, votes+ 11, votes- 0, confidence -5.5
+L 1, N 0: Experiments 12/15, votes+ 12, votes- 0, confidence -6.0
+L 1, N 0: Experiments 13/16, votes+ 13, votes- 0, confidence -6.5
+L 1, N 0: Experiments 14/17, votes+ 14, votes- 0, confidence -7.0
+L 1, N 0: Experiments 15/18, votes+ 15, votes- 0, confidence -7.5
+L 1, N 0: Experiments 16/19, votes+ 16, votes- 0, confidence -8.0
+L 1, N 0: Experiments 17/20, votes+ 17, votes- 0, confidence -8.5
+L 1, N 0: Experiments 18/21, votes+ 18, votes- 0, confidence -9.0
+L 1, N 0: Experiments 19/22, votes+ 19, votes- 0, confidence -9.5
+L 1, N 0: Experiments 20/23, votes+ 20, votes- 0, confidence -10.0

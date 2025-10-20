@@ -1,0 +1,311 @@
+L 3, N 2: Experiments 0/0, votes+ 0, votes- 0, confidence 0.0
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 0/1, votes+ 0, votes- 0, confidence 0.0
+analyzeDualPoint: walkToDecisionPlaneBend_whitebox: Bend is too close.
+L 3, N 2: Experiments 0/2, votes+ 0, votes- 0, confidence 0.0
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 0/3, votes+ 0, votes- 0, confidence 0.0
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 0/4, votes+ 0, votes- 0, confidence 0.0
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 0/5, votes+ 0, votes- 0, confidence 0.0
+analyzeDualPoint: walkToDecisionPlaneBend_whitebox: Bend is too close.
+L 3, N 2: Experiments 0/6, votes+ 0, votes- 0, confidence 0.0
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 0/7, votes+ 0, votes- 0, confidence 0.0
+analyzeDualPoint: walkToDecisionPlaneBend_whitebox: Bend is too close.
+L 3, N 2: Experiments 0/8, votes+ 0, votes- 0, confidence 0.0
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 0/9, votes+ 0, votes- 0, confidence 0.0
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 0/10, votes+ 0, votes- 0, confidence 0.0
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 0/11, votes+ 0, votes- 0, confidence 0.0
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 0/12, votes+ 0, votes- 0, confidence 0.0
+L 3, N 2: Experiments 1/13, votes+ 1, votes- 0, confidence -0.5
+analyzeDualPoint: walkToDecisionPlaneBend_whitebox: Bend is too close.
+L 3, N 2: Experiments 1/14, votes+ 1, votes- 0, confidence -0.5
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 1/15, votes+ 1, votes- 0, confidence -0.5
+analyzeDualPoint: walkToDecisionPlaneBend_whitebox: Bend is too close.
+L 3, N 2: Experiments 1/16, votes+ 1, votes- 0, confidence -0.5
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 1/17, votes+ 1, votes- 0, confidence -0.5
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 1/18, votes+ 1, votes- 0, confidence -0.5
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 1/19, votes+ 1, votes- 0, confidence -0.5
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 1/20, votes+ 1, votes- 0, confidence -0.5
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 1/21, votes+ 1, votes- 0, confidence -0.5
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 1/22, votes+ 1, votes- 0, confidence -0.5
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 1/23, votes+ 1, votes- 0, confidence -0.5
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 1/24, votes+ 1, votes- 0, confidence -0.5
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 1/25, votes+ 1, votes- 0, confidence -0.5
+L 3, N 2: Experiments 2/26, votes+ 2, votes- 0, confidence -1.0
+L 3, N 2: Experiments 3/27, votes+ 2, votes- 1, confidence -0.16666666666666669
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 3/28, votes+ 2, votes- 1, confidence -0.16666666666666669
+analyzeDualPoint: walkToDecisionPlaneBend_whitebox: Bend is too close.
+L 3, N 2: Experiments 3/29, votes+ 2, votes- 1, confidence -0.16666666666666669
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 3/30, votes+ 2, votes- 1, confidence -0.16666666666666669
+analyzeDualPoint: walkToDecisionPlaneBend_whitebox: Bend is too close.
+L 3, N 2: Experiments 3/31, votes+ 2, votes- 1, confidence -0.16666666666666669
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 3/32, votes+ 2, votes- 1, confidence -0.16666666666666669
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 3/33, votes+ 2, votes- 1, confidence -0.16666666666666669
+analyzeDualPoint: walkToDecisionPlaneBend_whitebox: Bend is too close.
+L 3, N 2: Experiments 3/34, votes+ 2, votes- 1, confidence -0.16666666666666669
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 3/35, votes+ 2, votes- 1, confidence -0.16666666666666669
+analyzeDualPoint: walkToDecisionPlaneBend_whitebox: Bend is too close.
+L 3, N 2: Experiments 3/36, votes+ 2, votes- 1, confidence -0.16666666666666669
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 3/37, votes+ 2, votes- 1, confidence -0.16666666666666669
+analyzeDualPoint: walkToDecisionPlaneBend_whitebox: Bend is too close.
+L 3, N 2: Experiments 3/38, votes+ 2, votes- 1, confidence -0.16666666666666669
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 3/39, votes+ 2, votes- 1, confidence -0.16666666666666669
+analyzeDualPoint: walkToDecisionPlaneBend_whitebox: Bend is too close.
+L 3, N 2: Experiments 3/40, votes+ 2, votes- 1, confidence -0.16666666666666669
+L 3, N 2: Experiments 4/41, votes+ 2, votes- 2, confidence -0.0
+L 3, N 2: Experiments 5/42, votes+ 2, votes- 3, confidence -0.09999999999999995
+L 3, N 2: Experiments 6/43, votes+ 2, votes- 4, confidence -0.33333333333333337
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 6/44, votes+ 2, votes- 4, confidence -0.33333333333333337
+L 3, N 2: Experiments 7/45, votes+ 2, votes- 5, confidence -0.642857142857143
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 7/46, votes+ 2, votes- 5, confidence -0.642857142857143
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 7/47, votes+ 2, votes- 5, confidence -0.642857142857143
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 7/48, votes+ 2, votes- 5, confidence -0.642857142857143
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 7/49, votes+ 2, votes- 5, confidence -0.642857142857143
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 7/50, votes+ 2, votes- 5, confidence -0.642857142857143
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 7/51, votes+ 2, votes- 5, confidence -0.642857142857143
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 7/52, votes+ 2, votes- 5, confidence -0.642857142857143
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 7/53, votes+ 2, votes- 5, confidence -0.642857142857143
+analyzeDualPoint: walkToDecisionPlaneBend_whitebox: Bend is too close.
+L 3, N 2: Experiments 7/54, votes+ 2, votes- 5, confidence -0.642857142857143
+analyzeDualPoint: walkToDecisionPlaneBend_whitebox: Bend is too close.
+L 3, N 2: Experiments 7/55, votes+ 2, votes- 5, confidence -0.642857142857143
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 7/56, votes+ 2, votes- 5, confidence -0.642857142857143
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 7/57, votes+ 2, votes- 5, confidence -0.642857142857143
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 7/58, votes+ 2, votes- 5, confidence -0.642857142857143
+L 3, N 2: Experiments 8/59, votes+ 3, votes- 5, confidence -0.25
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 8/60, votes+ 3, votes- 5, confidence -0.25
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 8/61, votes+ 3, votes- 5, confidence -0.25
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 8/62, votes+ 3, votes- 5, confidence -0.25
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 8/63, votes+ 3, votes- 5, confidence -0.25
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 8/64, votes+ 3, votes- 5, confidence -0.25
+analyzeDualPoint: walkToDecisionPlaneBend_whitebox: Bend is too close.
+L 3, N 2: Experiments 8/65, votes+ 3, votes- 5, confidence -0.25
+analyzeDualPoint: walkToDecisionPlaneBend_whitebox: Bend is too close.
+L 3, N 2: Experiments 8/66, votes+ 3, votes- 5, confidence -0.25
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 8/67, votes+ 3, votes- 5, confidence -0.25
+analyzeDualPoint: walkToDecisionPlaneBend_whitebox: Bend is too close.
+L 3, N 2: Experiments 8/68, votes+ 3, votes- 5, confidence -0.25
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 8/69, votes+ 3, votes- 5, confidence -0.25
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 8/70, votes+ 3, votes- 5, confidence -0.25
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 8/71, votes+ 3, votes- 5, confidence -0.25
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 8/72, votes+ 3, votes- 5, confidence -0.25
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 8/73, votes+ 3, votes- 5, confidence -0.25
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 8/74, votes+ 3, votes- 5, confidence -0.25
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 8/75, votes+ 3, votes- 5, confidence -0.25
+analyzeDualPoint: walkToDecisionPlaneBend_whitebox: Bend is too close.
+L 3, N 2: Experiments 8/76, votes+ 3, votes- 5, confidence -0.25
+L 3, N 2: Experiments 9/77, votes+ 4, votes- 5, confidence -0.05555555555555561
+analyzeDualPoint: walkToDecisionPlaneBend_whitebox: Bend is too close.
+L 3, N 2: Experiments 9/78, votes+ 4, votes- 5, confidence -0.05555555555555561
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 9/79, votes+ 4, votes- 5, confidence -0.05555555555555561
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 9/80, votes+ 4, votes- 5, confidence -0.05555555555555561
+analyzeDualPoint: walkToDecisionPlaneBend_whitebox: Bend is too close.
+L 3, N 2: Experiments 9/81, votes+ 4, votes- 5, confidence -0.05555555555555561
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 9/82, votes+ 4, votes- 5, confidence -0.05555555555555561
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 9/83, votes+ 4, votes- 5, confidence -0.05555555555555561
+L 3, N 2: Experiments 10/84, votes+ 5, votes- 5, confidence -0.0
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 10/85, votes+ 5, votes- 5, confidence -0.0
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 10/86, votes+ 5, votes- 5, confidence -0.0
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 10/87, votes+ 5, votes- 5, confidence -0.0
+analyzeDualPoint: walkToDecisionPlaneBend_whitebox: Bend is too close.
+L 3, N 2: Experiments 10/88, votes+ 5, votes- 5, confidence -0.0
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 10/89, votes+ 5, votes- 5, confidence -0.0
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 10/90, votes+ 5, votes- 5, confidence -0.0
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 10/91, votes+ 5, votes- 5, confidence -0.0
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 10/92, votes+ 5, votes- 5, confidence -0.0
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 10/93, votes+ 5, votes- 5, confidence -0.0
+analyzeDualPoint: walkToDecisionPlaneBend_whitebox: Bend is too close.
+L 3, N 2: Experiments 10/94, votes+ 5, votes- 5, confidence -0.0
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 10/95, votes+ 5, votes- 5, confidence -0.0
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 10/96, votes+ 5, votes- 5, confidence -0.0
+analyzeDualPoint: walkToDecisionPlaneBend_whitebox: Bend is too close.
+L 3, N 2: Experiments 10/97, votes+ 5, votes- 5, confidence -0.0
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 10/98, votes+ 5, votes- 5, confidence -0.0
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 10/99, votes+ 5, votes- 5, confidence -0.0
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 10/100, votes+ 5, votes- 5, confidence -0.0
+L 3, N 2: Experiments 11/101, votes+ 5, votes- 6, confidence -0.045454545454545484
+L 3, N 2: Experiments 12/102, votes+ 6, votes- 6, confidence -0.0
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 12/103, votes+ 6, votes- 6, confidence -0.0
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 12/104, votes+ 6, votes- 6, confidence -0.0
+analyzeDualPoint: walkToDecisionPlaneBend_whitebox: Bend is too close.
+L 3, N 2: Experiments 12/105, votes+ 6, votes- 6, confidence -0.0
+L 3, N 2: Experiments 13/106, votes+ 6, votes- 7, confidence -0.03846153846153841
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 13/107, votes+ 6, votes- 7, confidence -0.03846153846153841
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 13/108, votes+ 6, votes- 7, confidence -0.03846153846153841
+analyzeDualPoint: walkToDecisionPlaneBend_whitebox: Bend is too close.
+L 3, N 2: Experiments 13/109, votes+ 6, votes- 7, confidence -0.03846153846153841
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 13/110, votes+ 6, votes- 7, confidence -0.03846153846153841
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 13/111, votes+ 6, votes- 7, confidence -0.03846153846153841
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 13/112, votes+ 6, votes- 7, confidence -0.03846153846153841
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 13/113, votes+ 6, votes- 7, confidence -0.03846153846153841
+L 3, N 2: Experiments 14/114, votes+ 7, votes- 7, confidence -0.0
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 14/115, votes+ 7, votes- 7, confidence -0.0
+L 3, N 2: Experiments 15/116, votes+ 7, votes- 8, confidence -0.03333333333333332
+L 3, N 2: Experiments 16/117, votes+ 8, votes- 8, confidence -0.0
+L 3, N 2: Experiments 17/118, votes+ 9, votes- 8, confidence -0.029411764705882366
+analyzeDualPoint: walkToDecisionPlaneBend_whitebox: Bend is too close.
+L 3, N 2: Experiments 17/119, votes+ 9, votes- 8, confidence -0.029411764705882366
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 17/120, votes+ 9, votes- 8, confidence -0.029411764705882366
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 17/121, votes+ 9, votes- 8, confidence -0.029411764705882366
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 17/122, votes+ 9, votes- 8, confidence -0.029411764705882366
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 17/123, votes+ 9, votes- 8, confidence -0.029411764705882366
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 17/124, votes+ 9, votes- 8, confidence -0.029411764705882366
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 17/125, votes+ 9, votes- 8, confidence -0.029411764705882366
+analyzeDualPoint: walkToDecisionPlaneBend_whitebox: Bend is too close.
+L 3, N 2: Experiments 17/126, votes+ 9, votes- 8, confidence -0.029411764705882366
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 17/127, votes+ 9, votes- 8, confidence -0.029411764705882366
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 17/128, votes+ 9, votes- 8, confidence -0.029411764705882366
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 17/129, votes+ 9, votes- 8, confidence -0.029411764705882366
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 17/130, votes+ 9, votes- 8, confidence -0.029411764705882366
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 17/131, votes+ 9, votes- 8, confidence -0.029411764705882366
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 17/132, votes+ 9, votes- 8, confidence -0.029411764705882366
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 17/133, votes+ 9, votes- 8, confidence -0.029411764705882366
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 17/134, votes+ 9, votes- 8, confidence -0.029411764705882366
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 17/135, votes+ 9, votes- 8, confidence -0.029411764705882366
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 17/136, votes+ 9, votes- 8, confidence -0.029411764705882366
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 17/137, votes+ 9, votes- 8, confidence -0.029411764705882366
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 17/138, votes+ 9, votes- 8, confidence -0.029411764705882366
+L 3, N 2: Experiments 18/139, votes+ 10, votes- 8, confidence -0.11111111111111122
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 18/140, votes+ 10, votes- 8, confidence -0.11111111111111122
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 18/141, votes+ 10, votes- 8, confidence -0.11111111111111122
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 18/142, votes+ 10, votes- 8, confidence -0.11111111111111122
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 18/143, votes+ 10, votes- 8, confidence -0.11111111111111122
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 18/144, votes+ 10, votes- 8, confidence -0.11111111111111122
+L 3, N 2: Experiments 19/145, votes+ 10, votes- 9, confidence -0.026315789473684265
+L 3, N 2: Experiments 20/146, votes+ 10, votes- 10, confidence -0.0
+L 3, N 2: Experiments 21/147, votes+ 11, votes- 10, confidence -0.02380952380952386
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 21/148, votes+ 11, votes- 10, confidence -0.02380952380952386
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 21/149, votes+ 11, votes- 10, confidence -0.02380952380952386
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 21/150, votes+ 11, votes- 10, confidence -0.02380952380952386
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 21/151, votes+ 11, votes- 10, confidence -0.02380952380952386
+analyzeDualPoint: walkToDecisionPlaneBend_whitebox: Bend is too close.
+L 3, N 2: Experiments 21/152, votes+ 11, votes- 10, confidence -0.02380952380952386
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 21/153, votes+ 11, votes- 10, confidence -0.02380952380952386
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 21/154, votes+ 11, votes- 10, confidence -0.02380952380952386
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 21/155, votes+ 11, votes- 10, confidence -0.02380952380952386
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 21/156, votes+ 11, votes- 10, confidence -0.02380952380952386
+analyzeDualPoint: walkToDecisionPlaneBend_whitebox: Bend is too close.
+L 3, N 2: Experiments 21/157, votes+ 11, votes- 10, confidence -0.02380952380952386
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 21/158, votes+ 11, votes- 10, confidence -0.02380952380952386
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 21/159, votes+ 11, votes- 10, confidence -0.02380952380952386
+analyzeDualPoint: walkToDecisionPlaneBend_whitebox: Bend is too close.
+L 3, N 2: Experiments 21/160, votes+ 11, votes- 10, confidence -0.02380952380952386
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 21/161, votes+ 11, votes- 10, confidence -0.02380952380952386
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 21/162, votes+ 11, votes- 10, confidence -0.02380952380952386
+L 3, N 2: Experiments 22/163, votes+ 11, votes- 11, confidence -0.0
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 22/164, votes+ 11, votes- 11, confidence -0.0
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 22/165, votes+ 11, votes- 11, confidence -0.0
+analyzeDualPoint: analyzeDualPoint: Too many past ReLUs.
+L 3, N 2: Experiments 22/166, votes+ 11, votes- 11, confidence -0.0
