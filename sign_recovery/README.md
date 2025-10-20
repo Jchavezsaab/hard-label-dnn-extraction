@@ -14,12 +14,14 @@ described in the paper.
 
 The attack performs a statistical test using a list of dual points for each neuron, which
 are assumed to have already been precomputed using the code in the `signature_recovery`
-directory. The dual points should be saved to separate files named `layerX_neuronY.npy`.
+directory. The dual points should be saved to separate files named `layerX_neuronY.npy`
+in `data/dual_points_{model_name}`.
 Each file should contain a numpy array of shape `N x M`, where `N` is a large number
 of samples (preferably above 10,000) and `M` is the network's input size.
 
-For the sample neural network, these have already been computed and can be found
-in `data/dual_points_cifar10_3x256_64_10_float64/`.
+For the sample neural network, these can be downloaded from:
+https://drive.google.com/file/d/1mFfKlLgE0ZnGPAYN8tPRtb2iYpP5QgfY/view?usp=sharing
+The zip file must be extracted to `data/dual_points_cifar10_3x256_64_10_float64/`.
 
 ## Analyzing a single neuron
 

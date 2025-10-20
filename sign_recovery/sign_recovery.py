@@ -723,7 +723,10 @@ def main(argv):
     # Load dual points from file: 
     dual_point_id = 0
     if not ndebug: logger.debug(f"Load dual points from file: {args.filepath_load_x0}.")
-    X_DUAL = np.load(args.filepath_load_x0)
+    try:
+        X_DUAL = np.load(args.filepath_load_x0)
+    except:
+        print(f"Error: could not find precomputed dual points at {args.filepath_load_x0}. Generate or download them (see README).")
     def get_dual_point(dual_point_id): 
         if dual_point_id < len(X_DUAL):
             x_dual = X_DUAL[dual_point_id]
