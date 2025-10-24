@@ -21,6 +21,7 @@ def getRealSigns(model, layerID):
     signsLayer = np.sign(weights[-1][0])
     return signsLayer
 
+
 def getSignatures(model, layerID):
     """Simulates the signature recovery and returns the corresponding weights, biases."""
     weights, biases = getWeightsAndBiases(model, range(1, layerID + 1))

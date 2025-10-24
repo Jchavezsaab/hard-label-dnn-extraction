@@ -36,7 +36,7 @@ def getSavePath(modelname, layerID, neuronID, runID=None, mkdir=True, whitebox=T
 
     return pathName
 
-def parseArguments(argv=None):
+def parseArguments_whitebox(argv=None):
 
     # ---------------------------------------------------
     # Parse arguments from command line
@@ -96,6 +96,79 @@ def parseArguments(argv=None):
 
     return args
 
+
+def parseArguments_blackbox(argv=None):
+
+    # ---------------------------------------------------
+    # Parse arguments from command line
+    # ---------------------------------------------------
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description='Run sign recovery.',
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+
+    # ---- add arguments to parser
+    parser.add_argument('--model', type=str,
+                        help='The path to a keras.model (https://www.tensorflow.org/tutorials/keras/save_and_load).')
+    parser.add_argument('--layer', type=str,
+                        help='The ID of the target layers, separated by commas without spaces, e.g. "1,2,3".')
+    parser.add_argument('--neuron', type=str,
+                        help="Target neuron IDs, separated by commas and using - for ranges, e.g. '0,10,240-250'")
+    parser.add_argument('--Nmin', type=int,
+                        help="Minimum number of experiments to be conducted per neuron.")
+    parser.add_argument('--Nmax', type=int,
+                        help="Maximum number of experiments to be conducted per neuron.")
+    parser.add_argument('--pastRelusMax', type=int,
+                        help="Number of past-layer relus that can be crossed before aborting an experiment.")
+    parser.add_argument('--j', type=int,
+                        help="Number of concurrent jobs.")
+
+    # ---- default values
+    defaults = {'model': "unitary_32_8x4_4_float64",
+                'layer': '1',
+                'neuron': '0',
+                'Nmin': 20,
+                'Nmax': 1000,
+                'pastRelusMax': 0,
+                'j': 1
+                }
+
+    # ---- parse args
+    parser.set_defaults(**defaults)
+
+    if not argv: args = parser.parse_args()
+    else: args = parser.parse_args(argv)
+
+    return args
+
+def parseRange(s):
+    out = []
+    for x in s.split(','):
+        if '-' in x:
+            a,b = x.split('-')
+            out += list(range(int(a), int(b)+1))
+        else:
+            out += [int(x)]
+    return out
+
+def importModelParameters(modelName):
+    model = tf.keras.models.load_model(modelName)
+    Nlayers = 0
+    weights, biases = [],[]
+    for layer in model.layers:
+        if type(layer) == tf.keras.layers.Dense:
+            weights.append(layer.get_weights()[0])
+            biases.append(layer.get_weights()[1])
+            Nlayers += 1
+    try: shape = model.input_shape[1:]
+    except: shape = [x for x in model.get_config()["layers"][0]["config"]["batch_shape"] if x]
+    return model, weights, biases, Nlayers, shape
+
+class ExperimentException(Exception):
+    def __init__(self, message=None):
+        self.message = message
+        super().__init__(message)
 
 def getLocalMatrixAndBias(weights, biases, x0):
     """

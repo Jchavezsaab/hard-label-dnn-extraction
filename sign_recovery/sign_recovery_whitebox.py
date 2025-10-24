@@ -37,43 +37,13 @@ import logging
 import sys
 
 import whitebox
-import common
+from common import ExperimentException, getLocalMatrixAndBias, parseArguments_whitebox, getSavePath
 
 N_CID = 2 # how many of the strongest output layer classes to consider 
 
 # ---------------------------------------------------
 # Functions related to toggles and boundaries
 # ---------------------------------------------------
-def neuron_toggle_state(weights, biases, x0, with_output_classes=False):
-    """
-    Returns the toggled state of neurons at each layer.
-
-    'with_output_classes': If set to 'True', we consider the last weights to be connected to a softmax layer. 
-    A 'toggle' in the softmax layer occurs when the output class with the highest probability 
-    changes from one class (or output neuron) to another.
-    """
-    if with_output_classes: 
-        weightsReLU = weights[:-1] # the last weights are connected to a softmax layer, not ReLU
-    else: 
-        weightsReLU = weights
-
-    x = x0.copy()
-    states = []
-    for i in range(len(weightsReLU)):
-        x = x@weightsReLU[i] + biases[i]
-        states.append(x > 0)
-        x[x<0] = 0.0
-
-    if with_output_classes: 
-        x = x@weights[-1] + biases[-1] 
-        if N_CID == 1: 
-            states.append(x==np.max(x))
-        elif N_CID > 1: 
-            ids_sorted = np.argsort(x)[::-1]
-            _states = np.zeros_like(x)
-            _states[ids_sorted[:N_CID]] = 1
-            states.append(_states)
-    return states
 
 def get_classID(weights, biases, x0): 
     # get the output states
@@ -119,6 +89,37 @@ def find_point_of_boundary(weights, biases, x0, dx, infinity=1e10, eps=1e-6, wit
 
     return x1
 
+def neuron_toggle_state(weights, biases, x0, with_output_classes=False):
+    """
+    Returns the toggled state of neurons at each layer.
+
+    'with_output_classes': If set to 'True', we consider the last weights to be connected to a softmax layer. 
+    A 'toggle' in the softmax layer occurs when the output class with the highest probability 
+    changes from one class (or output neuron) to another.
+    """
+    if with_output_classes: 
+        weightsReLU = weights[:-1] # the last weights are connected to a softmax layer, not ReLU
+    else: 
+        weightsReLU = weights
+
+    x = x0.copy()
+    states = []
+    for i in range(len(weightsReLU)):
+        x = x@weightsReLU[i] + biases[i]
+        states.append(x > 0)
+        x[x<0] = 0.0
+
+    if with_output_classes: 
+        x = x@weights[-1] + biases[-1] 
+        if N_CID == 1: 
+            states.append(x==np.max(x))
+        elif N_CID > 1: 
+            ids_sorted = np.argsort(x)[::-1]
+            _states = np.zeros_like(x)
+            _states[ids_sorted[:N_CID]] = 1
+            states.append(_states)
+    return states
+
 def which_neuron_toggled(weights, biases, x0, x1, with_output_classes=False):
     """
     Change w.r.t. v9: The return value now contains the layerID of the toggled neuron
@@ -147,12 +148,12 @@ def which_neuron_toggled(weights, biases, x0, x1, with_output_classes=False):
 # Functions related to neural network outputs
 # ---------------------------------------------------
 def get_target_neuron_output_at_x(x, weights, biases, layerId, neuronId):
-    F,b = common.getLocalMatrixAndBias(weights[:layerId], biases[:layerId], x) # transformations from input to layerId
+    F,b = getLocalMatrixAndBias(weights[:layerId], biases[:layerId], x) # transformations from input to layerId
     y0 = (x@F + b)[neuronId] # error value of the target neuron (should be zero but wont be exactly)
     return y0
 
 def get_target_neuron_output(x, dx, weights, biases, layerId, neuronId):
-    F,b = common.getLocalMatrixAndBias(weights[:layerId], biases[:layerId], x) # transformations from input to layerId
+    F,b = getLocalMatrixAndBias(weights[:layerId], biases[:layerId], x) # transformations from input to layerId
     # y0 = (x@F + b)[neuronId] # error value of the target neuron (should be zero but wont be exactly)
     dy = (dx@F)[neuronId] # size of the wiggle produced by dx
     return dy
@@ -178,7 +179,7 @@ def get_neuron_values(x, weights, biases):
     return values
 
 def get_target_layer_output_norm_after_ReLU(x, dx, weights, biases, layerId):
-    F,b = common.getLocalMatrixAndBias(weights[:layerId], biases[:layerId], x) # transformations from input to layerId
+    F,b = getLocalMatrixAndBias(weights[:layerId], biases[:layerId], x) # transformations from input to layerId
     y0 = (x@F + b) # target layer output at x
     dy = (dx@F) # size of the wiggle produced by dx
     # logger.debug(f"Number of OFF neurons: \t {np.sum([y0<=0.0])}/{len(dy)}")
@@ -186,7 +187,7 @@ def get_target_layer_output_norm_after_ReLU(x, dx, weights, biases, layerId):
     return np.linalg.norm(dy)
 
 def get_target_layer_average_entries_without_neuronId(x, dx, weights, biases, layerId, neuronId):
-    F,b = common.getLocalMatrixAndBias(weights[:layerId], biases[:layerId], x) # transformations from input to layerId
+    F,b = getLocalMatrixAndBias(weights[:layerId], biases[:layerId], x) # transformations from input to layerId
     y0 = (x@F + b) # target layer output at x
     dy = (dx@F) # size of the wiggle produced by dx
     dy[y0<=0.0] = 0.0
@@ -269,13 +270,8 @@ _DX_TYPES = Literal['along_decision_boundary',
                     'along_decision_boundary_with_prop', 
                     'perfect_control_along_decision_boundary']
 
-class ExperimentException(Exception):
-    def __init__(self, message=None):
-        self.message = message
-        super().__init__(message)
-
 def get_m(x, weights, biases, use_strongest_output_port):
-    m,_ = common.getLocalMatrixAndBias(weights, biases, x)
+    m,_ = getLocalMatrixAndBias(weights, biases, x)
     cID = get_classID(weights, biases, x) if use_strongest_output_port else 0
     if N_CID == 1: 
         cID = cID[0]
@@ -285,16 +281,16 @@ def get_m(x, weights, biases, use_strongest_output_port):
 
 # =========== Obtain walking direction ===========
 def get_dx(x, eps, weights, biases, layerId, neuronId, choose_dx, use_strongest_output_port, model=None):
-    n,_ = common.getLocalMatrixAndBias(weights[:layerId], biases[:layerId], x)
+    n,_ = getLocalMatrixAndBias(weights[:layerId], biases[:layerId], x)
     n = n[:,neuronId]
-    # m,_ = common.getLocalMatrixAndBias(weights, biases, x)
+    # m,_ = getLocalMatrixAndBias(weights, biases, x)
     m = get_m(x, weights, biases, use_strongest_output_port)
 
     def get_Mb_of_layerId(x): 
         weights_sig, biases_sig = whitebox.getSignatures(model, layerId)
-        M,b = common.getLocalMatrixAndBias(weights_sig[:layerId], biases_sig[:layerId], x)
+        M,b = getLocalMatrixAndBias(weights_sig[:layerId], biases_sig[:layerId], x)
         # if layerId > 1:
-        #     M,b = common.getLocalMatrixAndBias(weights[:layerId], biases[:layerId], x) # transformation from input to layerId
+        #     M,b = getLocalMatrixAndBias(weights[:layerId], biases[:layerId], x) # transformation from input to layerId
         # else:
         #     M,b = np.identity(x.shape[0]), np.zeros(x.shape[0]) # special case for first hidden layer
         return M,b
@@ -314,7 +310,7 @@ def get_dx(x, eps, weights, biases, layerId, neuronId, choose_dx, use_strongest_
         dx = n.copy()
     elif choose_dx == 'optimal_EC24': # Optimal wiggle from EC24
         if layerId > 1:
-            Fm1,_ = common.getLocalMatrixAndBias(weights[:layerId-1], biases[:layerId-1], x) # transformation from input to layerId-1
+            Fm1,_ = getLocalMatrixAndBias(weights[:layerId-1], biases[:layerId-1], x) # transformation from input to layerId-1
             invF = np.linalg.pinv(Fm1)
         else:
             Fm1,_ = np.identity(x.shape[0]), np.zeros(x.shape[0]) # special case for first hidden layer
@@ -325,7 +321,7 @@ def get_dx(x, eps, weights, biases, layerId, neuronId, choose_dx, use_strongest_
         dx = dx@invF # optimal wiggle is sig*F^-1
     elif choose_dx == 'optimal_along_decision_boundary':
         if layerId > 1:
-            Fm1,bm1 = common.getLocalMatrixAndBias(weights[:layerId-1], biases[:layerId-1], x) # transformation from input to layerId-1
+            Fm1,bm1 = getLocalMatrixAndBias(weights[:layerId-1], biases[:layerId-1], x) # transformation from input to layerId-1
             y = x@Fm1 + bm1
             Fm1[:, np.where(y <= 0)] = 0
             invF = np.linalg.pinv(Fm1)
@@ -376,7 +372,7 @@ def analyze_x_dual(x_dual, weights, biases, layerId, neuronId,
 
     # =========== NORMAL VECTOR OF RELU HYPERPLANE ===========
     # transformations from input to layerId
-    F,_ = common.getLocalMatrixAndBias(weights[:layerId], biases[:layerId], x_dual)
+    F,_ = getLocalMatrixAndBias(weights[:layerId], biases[:layerId], x_dual)
     n = F[:,neuronId].copy()
     n = n / np.linalg.norm(n)
 
@@ -496,9 +492,9 @@ def analyze_x_dual(x_dual, weights, biases, layerId, neuronId,
             x = xB.copy()
             dx0 = dx.copy() # take note of the original dx direction for debugging purposes
             nold = n.copy()
-            n,_ = common.getLocalMatrixAndBias(weights[:layerId], biases[:layerId], x)
+            n,_ = getLocalMatrixAndBias(weights[:layerId], biases[:layerId], x)
             n = n[:,neuronId]
-            m,_ = common.getLocalMatrixAndBias(weights, biases, x)
+            m,_ = getLocalMatrixAndBias(weights, biases, x)
             cID = get_classID(weights, biases, x)
             #dx = get_dx(x, weights, biases, layerId, neuronId, choose_dx)
             dx = get_dx(x, eps, weights, biases, layerId, neuronId, choose_dx, True, model=model)
@@ -637,7 +633,7 @@ def main(argv):
 
     t0 = time.time() # start timer
 
-    args = common.parseArguments(argv)
+    args = parseArguments_whitebox(argv)
 
     print(f"Parsed arguments for sign recovery: \n\t {args}.")
 
@@ -647,7 +643,7 @@ def main(argv):
     # Setup File Paths
     # ---------------------------------------------------
     modelname = args.model.split('/')[-1].replace('.keras', '')
-    savePath = common.getSavePath(modelname, args.layerID, args.neuronID)
+    savePath = getSavePath(modelname, args.layerID, args.neuronID)
 
     # ---------------------------------------------------
     # Prepare logging
