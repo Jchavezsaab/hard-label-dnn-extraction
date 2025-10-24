@@ -5,7 +5,7 @@ Collection of functions and parameters for analysing a Deep Neural Network
 
 import numpy as np
 from keras import Model
-from blackbox import getHiddenVector,getLocalMatrixAndBias
+from common import getHiddenVector,getLocalMatrixAndBias
 
 def getWeightsAndBiases(model, layers):
     weights = []

@@ -36,7 +36,6 @@ import time
 import logging
 import sys
 
-import blackbox
 import whitebox
 import common
 
@@ -148,12 +147,12 @@ def which_neuron_toggled(weights, biases, x0, x1, with_output_classes=False):
 # Functions related to neural network outputs
 # ---------------------------------------------------
 def get_target_neuron_output_at_x(x, weights, biases, layerId, neuronId):
-    F,b = blackbox.getLocalMatrixAndBias(weights[:layerId], biases[:layerId], x) # transformations from input to layerId
+    F,b = common.getLocalMatrixAndBias(weights[:layerId], biases[:layerId], x) # transformations from input to layerId
     y0 = (x@F + b)[neuronId] # error value of the target neuron (should be zero but wont be exactly)
     return y0
 
 def get_target_neuron_output(x, dx, weights, biases, layerId, neuronId):
-    F,b = blackbox.getLocalMatrixAndBias(weights[:layerId], biases[:layerId], x) # transformations from input to layerId
+    F,b = common.getLocalMatrixAndBias(weights[:layerId], biases[:layerId], x) # transformations from input to layerId
     # y0 = (x@F + b)[neuronId] # error value of the target neuron (should be zero but wont be exactly)
     dy = (dx@F)[neuronId] # size of the wiggle produced by dx
     return dy
@@ -179,7 +178,7 @@ def get_neuron_values(x, weights, biases):
     return values
 
 def get_target_layer_output_norm_after_ReLU(x, dx, weights, biases, layerId):
-    F,b = blackbox.getLocalMatrixAndBias(weights[:layerId], biases[:layerId], x) # transformations from input to layerId
+    F,b = common.getLocalMatrixAndBias(weights[:layerId], biases[:layerId], x) # transformations from input to layerId
     y0 = (x@F + b) # target layer output at x
     dy = (dx@F) # size of the wiggle produced by dx
     # logger.debug(f"Number of OFF neurons: \t {np.sum([y0<=0.0])}/{len(dy)}")
@@ -187,7 +186,7 @@ def get_target_layer_output_norm_after_ReLU(x, dx, weights, biases, layerId):
     return np.linalg.norm(dy)
 
 def get_target_layer_average_entries_without_neuronId(x, dx, weights, biases, layerId, neuronId):
-    F,b = blackbox.getLocalMatrixAndBias(weights[:layerId], biases[:layerId], x) # transformations from input to layerId
+    F,b = common.getLocalMatrixAndBias(weights[:layerId], biases[:layerId], x) # transformations from input to layerId
     y0 = (x@F + b) # target layer output at x
     dy = (dx@F) # size of the wiggle produced by dx
     dy[y0<=0.0] = 0.0
@@ -276,7 +275,7 @@ class ExperimentException(Exception):
         super().__init__(message)
 
 def get_m(x, weights, biases, use_strongest_output_port):
-    m,_ = blackbox.getLocalMatrixAndBias(weights, biases, x)
+    m,_ = common.getLocalMatrixAndBias(weights, biases, x)
     cID = get_classID(weights, biases, x) if use_strongest_output_port else 0
     if N_CID == 1: 
         cID = cID[0]
@@ -286,16 +285,16 @@ def get_m(x, weights, biases, use_strongest_output_port):
 
 # =========== Obtain walking direction ===========
 def get_dx(x, eps, weights, biases, layerId, neuronId, choose_dx, use_strongest_output_port, model=None):
-    n,_ = blackbox.getLocalMatrixAndBias(weights[:layerId], biases[:layerId], x)
+    n,_ = common.getLocalMatrixAndBias(weights[:layerId], biases[:layerId], x)
     n = n[:,neuronId]
-    # m,_ = blackbox.getLocalMatrixAndBias(weights, biases, x)
+    # m,_ = common.getLocalMatrixAndBias(weights, biases, x)
     m = get_m(x, weights, biases, use_strongest_output_port)
 
     def get_Mb_of_layerId(x): 
         weights_sig, biases_sig = whitebox.getSignatures(model, layerId)
-        M,b = blackbox.getLocalMatrixAndBias(weights_sig[:layerId], biases_sig[:layerId], x)
+        M,b = common.getLocalMatrixAndBias(weights_sig[:layerId], biases_sig[:layerId], x)
         # if layerId > 1:
-        #     M,b = blackbox.getLocalMatrixAndBias(weights[:layerId], biases[:layerId], x) # transformation from input to layerId
+        #     M,b = common.getLocalMatrixAndBias(weights[:layerId], biases[:layerId], x) # transformation from input to layerId
         # else:
         #     M,b = np.identity(x.shape[0]), np.zeros(x.shape[0]) # special case for first hidden layer
         return M,b
@@ -315,7 +314,7 @@ def get_dx(x, eps, weights, biases, layerId, neuronId, choose_dx, use_strongest_
         dx = n.copy()
     elif choose_dx == 'optimal_EC24': # Optimal wiggle from EC24
         if layerId > 1:
-            Fm1,_ = blackbox.getLocalMatrixAndBias(weights[:layerId-1], biases[:layerId-1], x) # transformation from input to layerId-1
+            Fm1,_ = common.getLocalMatrixAndBias(weights[:layerId-1], biases[:layerId-1], x) # transformation from input to layerId-1
             invF = np.linalg.pinv(Fm1)
         else:
             Fm1,_ = np.identity(x.shape[0]), np.zeros(x.shape[0]) # special case for first hidden layer
@@ -326,7 +325,7 @@ def get_dx(x, eps, weights, biases, layerId, neuronId, choose_dx, use_strongest_
         dx = dx@invF # optimal wiggle is sig*F^-1
     elif choose_dx == 'optimal_along_decision_boundary':
         if layerId > 1:
-            Fm1,bm1 = blackbox.getLocalMatrixAndBias(weights[:layerId-1], biases[:layerId-1], x) # transformation from input to layerId-1
+            Fm1,bm1 = common.getLocalMatrixAndBias(weights[:layerId-1], biases[:layerId-1], x) # transformation from input to layerId-1
             y = x@Fm1 + bm1
             Fm1[:, np.where(y <= 0)] = 0
             invF = np.linalg.pinv(Fm1)
@@ -377,7 +376,7 @@ def analyze_x_dual(x_dual, weights, biases, layerId, neuronId,
 
     # =========== NORMAL VECTOR OF RELU HYPERPLANE ===========
     # transformations from input to layerId
-    F,_ = blackbox.getLocalMatrixAndBias(weights[:layerId], biases[:layerId], x_dual)
+    F,_ = common.getLocalMatrixAndBias(weights[:layerId], biases[:layerId], x_dual)
     n = F[:,neuronId].copy()
     n = n / np.linalg.norm(n)
 
@@ -497,9 +496,9 @@ def analyze_x_dual(x_dual, weights, biases, layerId, neuronId,
             x = xB.copy()
             dx0 = dx.copy() # take note of the original dx direction for debugging purposes
             nold = n.copy()
-            n,_ = blackbox.getLocalMatrixAndBias(weights[:layerId], biases[:layerId], x)
+            n,_ = common.getLocalMatrixAndBias(weights[:layerId], biases[:layerId], x)
             n = n[:,neuronId]
-            m,_ = blackbox.getLocalMatrixAndBias(weights, biases, x)
+            m,_ = common.getLocalMatrixAndBias(weights, biases, x)
             cID = get_classID(weights, biases, x)
             #dx = get_dx(x, weights, biases, layerId, neuronId, choose_dx)
             dx = get_dx(x, eps, weights, biases, layerId, neuronId, choose_dx, True, model=model)

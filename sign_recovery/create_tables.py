@@ -44,7 +44,7 @@ if __name__=='__main__':
         results = []
         N_NEURONS = 64 if lID==4 else 256
         for nID in range(N_NEURONS):
-            path = f"results/model_cifar10_3x256_64_10_float64/layerID_{lID}/neuronID_{nID}/df.pkl" 
+            path = f"results/whitebox/model_cifar10_3x256_64_10_float64/layerID_{lID}/neuronID_{nID}/df.pkl" 
 
             if not os.path.exists(path): 
                 continue 
