@@ -169,3 +169,5 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+data/dual_points*
+sign_recovery/results/*

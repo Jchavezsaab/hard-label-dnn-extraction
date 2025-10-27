@@ -1,7 +1,9 @@
 # ---------------------------------------------------
 # Prepare environment
 # ---------------------------------------------------
+
 import os, sys
+
 # Disable CUDA to avoid issues with multiprocessing
 os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
 # Prevent file locking errors
@@ -11,26 +13,49 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 # Disable oneDNN custom operations (this avoid round-off errors from different computation orders)
 os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 
-# ---------------------------------------------------
-# TensorFlow
-# ---------------------------------------------------
-import tensorflow as tf
-devices = tf.config.list_physical_devices('GPU')
-for device in devices:
-    tf.config.experimental.set_memory_growth(device, True)
+def parseArguments(argv=None):
 
+    # ---------------------------------------------------
+    # Parse arguments from command line
+    # ---------------------------------------------------
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description='Run the energy sign recovery.',
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+
+    # ---- add arguments to parser
+    parser.add_argument('--model', type=str,
+                        help='The path to a keras.model (https://www.tensorflow.org/tutorials/keras/save_and_load).')
+    parser.add_argument('--j', type=int,
+                        help='Number of parallel threads')
+
+    # ---- default values
+    defaults = {'model': "unitary_leaky_8_8x4_4_float64",
+                'j': 1,
+                }
+
+    # ---- parse args
+    parser.set_defaults(**defaults)
+
+    if not argv: args = parser.parse_args()
+    else: args = parser.parse_args(argv)
+
+    return args
+
+
+# If using multiple threads, turn off multithreading at the numpy level
+args = parseArguments(sys.argv[1:])
+if args.j != 1:
+    from multiprocessing import Pool
+    os.environ['MKL_NUM_THREADS'] = '1'
+    os.environ['OMP_NUM_THREADS'] = '1'
+    os.environ['OPENBLAS_NUM_THREADS'] = '1'
+
+import numpy as np
+import tensorflow as tf
 # potentially set backend to high precision
 tf.keras.backend.set_floatx('float64')
-
-# ---------------------------------------------------
-# Other imports
-# ---------------------------------------------------
-import numpy as np
-
-class ExperimentException(Exception):
-    def __init__(self, message=None):
-        self.message = message
-        super().__init__(message)
 
 def importModelParameters(modelName):
     model = tf.keras.models.load_model(modelName)
@@ -44,6 +69,11 @@ def importModelParameters(modelName):
     try: shape = model.input_shape[1:]
     except: shape = [x for x in model.get_config()["layers"][0]["config"]["batch_shape"] if x]
     return model, weights, biases, Nlayers, shape
+
+class ExperimentException(Exception):
+    def __init__(self, message=None):
+        self.message = message
+        super().__init__(message)
 
 def getLocalMatrixAndBiasLeaky(weights, biases, x0, alpha = 0.1):
     """
@@ -103,17 +133,17 @@ def findDecisionBoundaryLeaky(f, x0, dx0, tol, inf):
         raise ExperimentException("findDecisionBoundary: Decision boundary is too close.")
     return xA
 
-def getDecisionPointLeaky(f, shape, tol=1e-13, inf=1e7):
+def getDecisionPointLeaky(f, shape, tol=1e-13, inf=1e7, seed=None):
     """
     Finds a random point at the decision boundary.
     """
+    if seed: np.random.seed(seed)
     while True:
-        x0 = np.random.uniform(size=shape)
+        x0 = np.random.normal(size=shape)
         dx = np.random.normal(size=shape)
         try:
             return findDecisionBoundaryLeaky(f, x0, dx, tol=tol, inf = inf)
         except ExperimentException as e:
-            print(e)
             continue
 
 def hiddenLayerValuesLeaky(weights, biases, x, alpha=0.1):
@@ -163,12 +193,6 @@ def decisionPlaneNormalVectorLeaky(f, x0, eps = 1e-7, tol=1e-13):
         raise ExperimentException(f"decisionPlaneNormalVector: {e.message}")
     return m
 
-# #DEBUG
-# def decisionPlaneNormalVectorLeaky_whitebox(weights, biases, xi, alpha=0.1):
-#     M, b = getLocalMatrixAndBiasLeaky(weights, biases, xi, alpha=alpha)
-#     z = xi@M+b
-#     return (M[:,np.argmax(z)] - M[:,np.argsort(z)[-2]])
-
 def outputFunction(weights, biases, x0, m, alpha=0.1):
     """
     Given the weights and biases of previous layers and of the current one up to signs,
@@ -184,20 +208,44 @@ def outputFunction(weights, biases, x0, m, alpha=0.1):
         y = y@M + biases[i]
     return z
 
-def main():
+def analyzeDecisionPoint(f, weights, biases, layerId, x, whitebox_weights, whitebox_biases):
+    """
+    Input: The weights and biases of previous layers and of the current one up to signs,
+    oracle access to the network output f, a point x at the decision boundary, and a layer number.
+    Output: The assumed signs and output functions for each neuron in the target layer, and the
+    decision plane normal vector.
+    """
+    m = decisionPlaneNormalVectorLeaky(f, x)
+    y = hiddenLayerValuesLeaky(weights[:layerId], biases[:layerId], x)
+    s = np.sign(y)
+    c = np.abs(outputFunction(weights[:layerId], biases[:layerId], x, m))
+    #DEBUG
+    MM,bb = getLocalMatrixAndBiasLeaky(whitebox_weights[:layerId], whitebox_biases[:layerId], x)
+    yyi = x@MM+bb
+    yyi[yyi < 0] *= 0.1
+    G=getLocalMatrixAndBiasLeaky(whitebox_weights[layerId:], whitebox_biases[layerId:], yyi)[0]
+    MM,bb=getLocalMatrixAndBiasLeaky(whitebox_weights, whitebox_biases, x)#DEB
+    z = x@MM+bb
+    C = G[:,np.argmax(z)] - G[:,np.argsort(z)[-2]]
+    mm = MM[:,np.argmax(z)] - MM[:,np.argsort(z)[-2]]
+    # print('m',m/np.linalg.norm(m))
+    # print('M',mm/np.linalg.norm(mm))
+    C[yyi < 0] *= 0.1
+    # print('C',(C/np.linalg.norm(C))[:2])
+    # print('c',(c/np.linalg.norm(c))[:2])
+    M,b = getLocalMatrixAndBiasLeaky(weights[:layerId], biases[:layerId], x)
+    return [s,c,m]
+
+if __name__ == "__main__":
+    args = parseArguments(sys.argv[1:])
     tf.keras.backend.set_floatx('float64')
 
     # Load the model
-
-    try: modelName = sys.argv[1]
-    except: modelName = "unitary_leaky_32_8x4_4_float64"  # Default model
-    model, weights, biases, Nlayers, shape = importModelParameters(f"../data/{modelName}.keras")
-
-    # #DEBUG
-    # white_weights = [w.copy() for w in weights]
-    # white_biases = [b.copy() for b in biases]
+    model, weights, biases, Nlayers, shape = importModelParameters(f"../data/{args.model}.keras")
 
     # Obfuscate the signs
+    whitebox_weights = [w.copy() for w in weights]
+    whitebox_biases = [b.copy() for b in biases]
     real_signs = []
     for layer in range(Nlayers):
         real_signs.append(np.sign(np.random.uniform(low=-1, high=+1, size=weights[layer].shape[1])))
@@ -205,13 +253,16 @@ def main():
         biases[layer] *= real_signs[-1]
 
     # Blackbox oracle access to the model
-    f = lambda x: np.argmax((model.predict(x.reshape((1,)+shape), verbose = 0)))
+    def f(x):
+        # return np.argmax((model.predict(x.reshape((1,)+shape), verbose = 0)))
+        M,b = getLocalMatrixAndBiasLeaky(whitebox_weights, whitebox_biases, x)
+        return np.argmax(x@M+b)
 
     # Recover the signs
     decisionBoundaryPoints = []
     m = [] # m_i will contain the normal vector of the dual plane at the i-th decision-boundary point
-    for layer in range(1,Nlayers+1):
-        print(f"Layer {layer}/{Nlayers}")
+    for layer in range(1,Nlayers):
+        print(f"Hidden Layer {layer}/{Nlayers-1}")
         s = [] # s_i will contain the assumed sign of each neuron in the target layer for the i-th decision-boundary point
         c = [] # c_i will contain the output function at the i-th decision-boundary point
 
@@ -236,42 +287,38 @@ def main():
                     recovered_signs.append(1 - 2*(OFF.mean() > ON.mean()))
                 recovered_signs = np.array(recovered_signs)
 
-                print(f"Layer: {layer}, Experiments: {len(decisionBoundaryPoints)}, Correct signs: {sum(recovered_signs == real_signs[layer-1])}/{weights[layer-1].shape[1]}")
+                print(f"Layer: {layer}, Experiments: {len(decisionBoundaryPoints)}, Correct signs: {sum(recovered_signs == real_signs[layer-1])}/{weights[layer-1].shape[1]}", end='\r')
                 
                 # Stop once all recovered signs are correct
-                if np.all(recovered_signs == real_signs[layer-1]):
+                if np.all(recovered_signs == real_signs[layer-1]) and len(decisionBoundaryPoints)>100:
+                    print(f"Layer: {layer}, Experiments: {len(decisionBoundaryPoints)}, Correct signs: {sum(recovered_signs == real_signs[layer-1])}/{weights[layer-1].shape[1]}")
                     weights[layer-1] *= recovered_signs.reshape(1,-1)
                     break
-                else:
-                    print("Wrong signs:")
-                    for neuron in [x for x in range(weights[layer-1].shape[1]) if np.isnan(recovered_signs[x]) or recovered_signs[x] != real_signs[layer-1][x]]:
-                        print(f"neuron {neuron}, +cases: {nON[neuron]}, -cases:{nOFF[neuron]}", end = " / ")
-                    print()
+                # else:
+                    # print("Wrong signs:")
+                    # for neuron in [x for x in range(weights[layer-1].shape[1]) if np.isnan(recovered_signs[x]) or recovered_signs[x] != real_signs[layer-1][x]]:
+                    #     print(f"neuron {neuron} (+/- cases: {nON[neuron]}/{nOFF[neuron]})", end = " ; ")
+                    # print("\n")
 
             # Get new decision-boundary point
-            xi = getDecisionPointLeaky(f, shape)
-            decisionBoundaryPoints.append(xi)
-            mi = decisionPlaneNormalVectorLeaky(f, xi)
-            # mi = decisionPlaneNormalVectorLeaky_whitebox(white_weights, white_biases, xi)#DEBUG
-            m.append(mi)
-
-            # Compute predicted sign and output function
-            yi = hiddenLayerValuesLeaky(weights[:layer], biases[:layer], xi)
-            s.append(np.sign(yi))
-            c.append(np.abs(outputFunction(weights[:layer], biases[:layer], xi, mi)))
-
-            # #DEBUG:
-            # MM,bb = getLocalMatrixAndBiasLeaky(white_weights[:layer], white_biases[:layer], xi)
-            # yyi = xi@MM+bb
-            # yyi[yyi < 0] *= 0.1
-            # G=getLocalMatrixAndBiasLeaky(white_weights[layer:], white_biases[layer:], yyi)[0]
-            # MM,bb=getLocalMatrixAndBiasLeaky(white_weights, white_biases, xi)#DEB
-            # z = xi@MM+bb
-            # C = G[:,np.argmax(z)] - G[:,np.argsort(z)[-2]]
-            # C[yyi < 0] *= 0.1
-            # print('C',(C/np.linalg.norm(C))[:2])
-            # print('c',(c[-1]/np.linalg.norm(c[-1]))[:2])
-            # M,b = getLocalMatrixAndBiasLeaky(weights[:layer], biases[:layer], xi)
-
-if __name__ == "__main__":
-    main()
+            if(args.j == 1):
+                xi = getDecisionPointLeaky(f, shape)
+                si, ci, mi = analyzeDecisionPoint(f, weights, biases, layer, xi, whitebox_weights, whitebox_biases)
+                decisionBoundaryPoints.append(xi)
+                m.append(mi)
+                s.append(si)
+                c.append(ci)
+            else:
+                def func(seed):
+                    try:
+                        xi = getDecisionPointLeaky(f,shape, seed=seed)
+                        return [xi] + analyzeDecisionPoint(f, weights, biases, layer, xi, whitebox_weights, whitebox_biases)
+                    except ExperimentException as e:
+                        return func(seed+100)
+                with Pool(args.j) as p:
+                    outputs = p.map(func, [len(m)+i for i in range(args.j)])
+                    for i in range(len(outputs)):
+                        decisionBoundaryPoints.append(outputs[i][0])
+                        s.append(outputs[i][1])
+                        c.append(outputs[i][2])
+                        m.append(outputs[i][3])

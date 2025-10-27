@@ -11,10 +11,11 @@ The model's structure and name can be edited in the script.
 
 ## Sign Recovery
 To simulate sign recovery, run:
-`python sign_recovery_leaky.py {model_name}`
+`python sign_recovery_leaky.py --model {model_name} --j {num_threads}`
 
-The `model_name` must be name of a model in the `data` directory (default is `unitary_leaky_32_8x4_4_float64`).
+The `model_name` must be the name of a model in the `data` directory (default is `unitary_leaky_8_8x4_4_float64`),
+and `j` is the number of parallel threads (default 1).
 
-The attack assumes that the signatures have already been recovered, and is fully blackbox other than that.
+The attack assumes that the signatures have already been recovered, but is fully blackbox other than that.
 It works by finding random points at a decision boundary, which it computes on the fly.
 
