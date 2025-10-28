@@ -37,7 +37,7 @@ import matplotlib.pyplot as plt
 import time
 import logging
 import sys
-from common import getLocalMatrixAndBias, ExperimentException, parseArguments_blackbox, parseRange, importModelParameters
+from common import getLocalMatrixAndBias, ExperimentException, parseArguments_blackbox, parseRange, importModelParameters, getSavePath
 
 #DEBUG
 def decissionPlaneNormalVector_whitebox(weights, biases, xi):
@@ -174,7 +174,6 @@ def walkToDecisionPlaneBend(f, xp, xm, dx0, m0, tol, inf):
     Returns the point just after the bend (to a distance tol)
     """
     if (f(xp) == f(xm)):
-        assert(0)
         raise ExperimentException("walkToDecisionPlaneBend: Points are not on opposite sides of the decision boundary.")
     dx = dx0 - np.dot(dx0, m0)*m0/np.dot(m0, m0)
     # Double displacement until we cross boundary
@@ -218,13 +217,14 @@ def getWalkingDirection(weights, biases, neuronId, x0):
     dx = sig@invF # optimal wiggle
     return dx
 
-def analyzeDualPoint(f, weights, biases, xp, xm, layerId, neuronId, eps, tol, inf, pastRelusMax=0, cheatm = 1, cheatw = 1):
+def analyzeDualPoint(f, weights, biases, xp, xm, layerId, neuronId, eps, tol, inf, pastRelusMax=0, cheatm = 0, cheatw = 0):
     """
     Given the weights and biases of the previous layers and the current one up to signs, and xp,xm on opposite sides of a relu (at least eps away from it)
     for neuron neuronId in layer layerId, walks in the optimal direction and computes the distance until a future neuron is toggled on either side.
     The walking direction will be adjusted after crossing a previous-layer relu, up to a timeout of pastReluMax times. 
     """
     try:
+        result = {}
         dx0 = getWalkingDirection(weights[:layerId], biases[:layerId], neuronId, xp)
         M0,b0 = getLocalMatrixAndBias(weights[:layerId], biases[:layerId], xp.flatten())
         yp = (xp.flatten()@M0 + b0.flatten())[neuronId]
@@ -233,8 +233,8 @@ def analyzeDualPoint(f, weights, biases, xp, xm, layerId, neuronId, eps, tol, in
         
         #DEBUG
         MM,bb = getLocalMatrixAndBias(weights, biases, xp.flatten())
-        print("y", yp)
-        print("z", xp@MM+bb)
+        # print("y", yp)
+        # print("z", xp@MM+bb)
 
         dON = 0
         dOFF = 0
@@ -261,7 +261,7 @@ def analyzeDualPoint(f, weights, biases, xp, xm, layerId, neuronId, eps, tol, in
                 xAm = xA - eps*m/np.linalg.norm(m)
 
                 if cheatw: xB = walkToDecisionPlaneBend_whitebox(weights, biases, xA, dx, tol, inf)
-                else: xB = walkToDecisionPlaneBend(f, xAp, xAm, dx, m, tol, inf)
+                else: xB = walkToDecisionPlaneBend(f, xAp, xAm, dx, m, tol, inf=1e3)
 
                 #DEBUG
                 xBB = walkToDecisionPlaneBend_whitebox(weights, biases, xA, dx, tol, inf)
@@ -287,9 +287,13 @@ def analyzeDualPoint(f, weights, biases, xp, xm, layerId, neuronId, eps, tol, in
                     n = -n
                 dx = getWalkingDirection(weights[:layerId], biases[:layerId], neuronId, xB)
                 xA = xB.copy()
+                result['paseRelus'+side] = pastRelus
+        result['dON'] = dON
+        result['dOFF'] = dOFF
+        result['succcess'] = True
     except ExperimentException as e:
         raise ExperimentException(f"analyzeDualPoint: {e.message}")
-    return dON, dOFF
+    return result
         
 def getConfidence(votes_m, votes_p): 
     # Check confidence
@@ -301,58 +305,70 @@ def getConfidence(votes_m, votes_p):
     if np.isnan(logp): logp = 0.0
     return logp 
 
-def recoverSign(model, shape, weights, biases, duals, layerId, neuronId, eps, tol, inf, Nmin, Nmax, pastRelusMax):
+def recoverSign(f, weights, biases, duals, layerId, neuronId, eps, tol, inf, Nmin, Nmax, pastRelusMax, logFile=None):
     """
     Recovers the sign of a single neuron given the weights and biases of previous layers and the current one up to signs.
     duals is a generator that produces dual points (xp,xm) on opposite sides of the relu for the target neuron.
     """
 
-
-    model = tf.keras.models.load_model(f"../data/{args.model}.keras")
-    f = lambda x: np.argmax((model.predict(x.reshape((1,)+shape), verbose = 0)))
-
     N = 0
     NN = 0
     votes_p = 0
     votes_m = 0
+    t0 = time.time()
 
-    
-    with open(f"results/blackbox/{args.model}/{layerId}_{neuronId}.txt", "w") as outf:
-        for x_dual in duals:
+    results=[]
+    for dual_point_id,x_dual in enumerate(duals, start=1):
 
-            if x_dual is None:
-                print(f"L {layerId}, N {neuronId}: Experiments {N}/{NN}, votes+ {votes_p}, votes- {votes_m}, confidence {getConfidence(votes_m, votes_p)}", file=outf)
-                print("Warning: Ran out of dual points.", file=outf)
+        if x_dual is None:
+            print(f"L {layerId}, N {neuronId}: Experiments {N}/{NN}, votes+ {votes_p}, votes- {votes_m}, confidence {getConfidence(votes_m, votes_p)}", file=logFile)
+            print("Warning: Ran out of dual points.", file=logFile)
+            break
+        xp, _, xm = x_dual
+        if NN % 1 == 0:
+            print(f"L {layerId}, N {neuronId}: Experiments {N}/{NN}, votes+ {votes_p}, votes- {votes_m}, confidence {getConfidence(votes_m, votes_p)}", file=logFile)
+        NN += 1
+        try:
+            t1 = time.time()
+            result = (analyzeDualPoint(f, weights, biases, xp, xm, layerId, neuronId, eps=eps, tol=tol, inf=inf, pastRelusMax=pastRelusMax))
+            result['dual_point_id'] = dual_point_id
+            dON, dOFF = result['dON'], result['dOFF']
+            if dON < dOFF: 
+                votes_p += 1
+            else:
+                votes_m += 1
+            logp = getConfidence(votes_m, votes_p)
+            N += 1
+            result['nExp'] = N
+            result['subpoint_time_seconds'] = time.time()-t1
+            result['total_execution_time'] = time.time()-t0
+            if (logp < -3.6889 and N >= Nmin) or (N >= Nmax):
+                print(f"Stopping after {N} experiments with confidence {logp:.2f} (votes+ {votes_p}, votes- {votes_m})", file=logFile)
                 break
-            xp, _, xm = x_dual
-            if NN % 1 == 0:
-                print(f"L {layerId}, N {neuronId}: Experiments {N}/{NN}, votes+ {votes_p}, votes- {votes_m}, confidence {getConfidence(votes_m, votes_p)}", file=outf)
-            NN += 1
-            try:
-                dON, dOFF = analyzeDualPoint(f, weights, biases, xp, xm, layerId, neuronId, eps=eps, tol=tol, inf=inf, pastRelusMax=pastRelusMax)
-                if dON < dOFF: 
-                    votes_p += 1
-                else:
-                    votes_m += 1
-                logp = getConfidence(votes_m, votes_p)
-                N += 1
-                if (logp < -3.6889 and N >= Nmin) or (N >= Nmax):
-                    print(f"Stopping after {N} experiments with confidence {logp:.2f} (votes+ {votes_p}, votes- {votes_m})")
-                    break
-            except ExperimentException as e:
-                print(e, file=outf)
-                continue
-        print(f"L {layerId}, N {neuronId}: Experiments {N}/{NN}, votes+ {votes_p}, votes- {votes_m}, confidence {getConfidence(votes_m, votes_p)}", file=outf)
-
+            result['logp'] = logp
+            results.append(result)
+        except ExperimentException as e:
+            print(e, file=logFile)
+            continue
+    print(f"L {layerId}, N {neuronId}: Experiments {N}/{NN}, votes+ {votes_p}, votes- {votes_m}, confidence {getConfidence(votes_m, votes_p)}", file=logFile)
+    return results
    
 
 if __name__ == "__main__":
 
     args = parseArguments_blackbox(sys.argv[1:])
     tf.keras.backend.set_floatx('float64')
+
+    # Load model
     model, weights, biases, Nlayers, shape = importModelParameters(f"../data/{args.model}.keras")
 
+    # Blackbox access to the model
+    def f(x):
+        # return np.argmax((model.predict(x.reshape((1,)+shape), verbose = 0)))
+        M,b = getLocalMatrixAndBias(weights, biases, x)
+        return np.argmax(x@M+b)
 
+    # Target neurons/layers
     try:
         neurons = parseRange(args.neuron)
         layers = parseRange(args.layer)
@@ -360,19 +376,24 @@ if __name__ == "__main__":
         print("Failed to parse neuron/layer range")
         exit(-1)
 
-    pathlib.Path(f"results/blackbox/{args.model}").mkdir(parents=True, exist_ok=True)
-
+    # Wrapper for the function that recovers sign of a single neuron
     def func(jobId):
         if jobId // len(neurons) >= len(layers): return
         layerId = layers[jobId // len(neurons)]
         neuronId = neurons[jobId % len(neurons)]
         duals = np.load(f"../data/dual_points_{args.model}/layer{layerId}_neuron{neuronId}.npy", allow_pickle=True)
-        recoverSign(args.model, shape, weights, biases, duals, layerId, neuronId, 1e-7, 1e-14, 1e14, args.Nmin, args.Nmax, args.pastRelusMax)
-        
+        path = getSavePath(args.model, layerId, neuronId, runID=args.runID, mkdir=True, whitebox=False)
+        with open(f"{path}log.log", 'w') as logFile:
+            results=recoverSign(f, weights, biases, duals, layerId, neuronId, 1e-7, 1e-14, 1e14, args.Nmin, args.Nmax, args.pastRelusMax, logFile=logFile)
+        df = pd.DataFrame(results)
+        df['dOFF/dON'] = df.dOFF / df.dON
+        df['Vote dOFF>dON'] = df.dOFF > df.dON
+        df.to_pickle(f'{path}df.pkl')
+
     if args.j == 1:
         for i in range(len(neurons)*len(layers)):
-            print(func(i))
+            func(i)
 
     else:
         with Pool(args.j) as p:
-            print(p.map(func, [i for i in range(len(neurons)*len(layers))]))
+            p.map(func, [i for i in range(len(neurons)*len(layers))])

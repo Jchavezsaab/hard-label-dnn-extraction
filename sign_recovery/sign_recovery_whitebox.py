@@ -643,7 +643,7 @@ def main(argv):
     # Setup File Paths
     # ---------------------------------------------------
     modelname = args.model.split('/')[-1].replace('.keras', '')
-    savePath = getSavePath(modelname, args.layerID, args.neuronID)
+    savePath = getSavePath(modelname, args.layerID, args.neuronID, args.runID)
 
     # ---------------------------------------------------
     # Prepare logging

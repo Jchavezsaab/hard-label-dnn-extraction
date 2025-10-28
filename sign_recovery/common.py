@@ -28,7 +28,7 @@ def getSavePath(modelname, layerID, neuronID, runID=None, mkdir=True, whitebox=T
     else:
         runID = ''
 
-    pathName = f"results/{'whitebox' if whitebox else 'blackbox'}/model_{modelname.split('.')[0]}{runID}/layerID_{layerID}/neuronID_{neuronID}/"
+    pathName = f"results/{'whitebox' if whitebox else 'blackbox'}/{modelname.split('.')[0]}{runID}/layerID_{layerID}/neuronID_{neuronID}/"
 
     if mkdir:
         if os.path.exists(pathName): shutil.rmtree(pathName, ignore_errors=True)
@@ -54,6 +54,8 @@ def parseArguments_whitebox(argv=None):
                         help='The ID of your target layer (as enumerated in model.layers).')
     parser.add_argument('--neuronID', type=int,
                         help="Specific target neuron IDs, e.g. '0 10 240'")
+    parser.add_argument('--runID', type=str,
+                        help="Custom run label (to avoid overwritting results from previous runs)")
     parser.add_argument('--nExp', type=int,
                         help="Number of points to be investigated.")
     parser.add_argument('--analyzeWiggleSensitivity', type=str,
@@ -74,9 +76,10 @@ def parseArguments_whitebox(argv=None):
                         help="HARDLABEL: 'along_decision_boundary', 'perfect_control_along_decision_boundary'")
 
     # ---- default values
-    defaults = {'model': "./deti/modelweights/model_cifar10_256_256_256_256.keras",
+    defaults = {'model': "cifar10_3x256_64_10_float64",
                 'layerID': 2,
                 'neuronID': '10',
+                'runID': None,
                 'nExp': 400,
                 'analyzeWiggleSensitivity': 'False',
                 'analyzeSpeed': 'False',
@@ -115,6 +118,8 @@ def parseArguments_blackbox(argv=None):
                         help='The ID of the target layers, separated by commas without spaces, e.g. "1,2,3".')
     parser.add_argument('--neuron', type=str,
                         help="Target neuron IDs, separated by commas and using - for ranges, e.g. '0,10,240-250'")
+    parser.add_argument('--runID', type=str,
+                        help="Custom run label (to avoid overwritting results from previous runs)")
     parser.add_argument('--Nmin', type=int,
                         help="Minimum number of experiments to be conducted per neuron.")
     parser.add_argument('--Nmax', type=int,
@@ -128,6 +133,7 @@ def parseArguments_blackbox(argv=None):
     defaults = {'model': "unitary_32_8x4_4_float64",
                 'layer': '1',
                 'neuron': '0',
+                'runID': None,
                 'Nmin': 20,
                 'Nmax': 1000,
                 'pastRelusMax': 0,
