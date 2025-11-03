@@ -86,7 +86,7 @@ def parseArguments_whitebox(argv=None):
                 'handlePrevLayerToggles': 'True',
                 'nToggles': 1,
                 'nDebug': 'False',
-                'filepath_load_x0': '', 
+                'filepath_load_x0': '../data/dual_points_cifar10_3x256_64_10_float64', 
                 'nExpMin': 25, 
                 'choose_dx': 'along_decision_boundary',
                 }

@@ -21,10 +21,10 @@ The zip file must be extracted to `data/dual_points_cifar10_3x256_64_10_float64/
 In order to simulate the sign recovery of a single neuron, run
 
 ```
-python3 sign_recovery_whitebox.py --model {model_path} --layerID {layerID} --neuronID {neuronID} --filepath_load_x0 {filepath_load_x0}
+python3 sign_recovery_whitebox.py --model {model_name} --layerID {layerID} --neuronID {neuronID} --filepath_load_x0 {filepath_load_x0}
 ```
-where `model_path` is the path to the neural network being attacked, `layerID` and `neuronID` identify the target neuron, and `filepath_load_x0`
-is the path to the directory containing the precomputed dual points.
+where `model_name` is the name of the neural network being attacked (should be saved to `data/{model_name}.keras`, default is `cifar10_3x256_64_10_float64`),
+`layerID` and `neuronID` identify the target neuron.
 
 
 CAUTION: As we say in the paper, the purpose of this script is to prove that the ideas described
