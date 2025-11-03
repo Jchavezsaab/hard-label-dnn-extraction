@@ -21,7 +21,7 @@ The zip file must be extracted to `data/dual_points_cifar10_3x256_64_10_float64/
 In order to simulate the sign recovery of a single neuron, run
 
 ```
-python3 sign_recovery_whitebox --model {model_path} --layerID {layerID} --neuronID {neuronID} --filepath_load_x0 {filepath_load_x0}
+python3 sign_recovery_whitebox.py --model {model_path} --layerID {layerID} --neuronID {neuronID} --filepath_load_x0 {filepath_load_x0}
 ```
 where `model_path` is the path to the neural network being attacked, `layerID` and `neuronID` identify the target neuron, and `filepath_load_x0`
 is the path to the directory containing the precomputed dual points.
@@ -57,15 +57,31 @@ You can also provide the following options:
     `--nDebug {nDebug} <True | False>` If set to True, skips logging and several consistency checks in favor of performance. Default is False.
 
 
+# Blackbox analysis
+
+To simulate the blackbox sign recovery, run
+
+```
+python3 sign_recovery_blackbox.py --model {model_path} --layer {layerID} --neuron {neuronID} --j {num threads}
+```
+This performs the recovery of signs using only blackbox functionality, but does assume that perfect signatures are provided beforehand. It is only feasible for
+relatively small networks (the default for `--model` is `unitary_32_8x4_4_float64`). Both `--layer` and `--neuron` admit a single number or comma-separated
+numbers or ranges (e.g. `--neuron 1,2,5-7`). The `--j` flags allows one to launch the recovery for different networks with concurrent threads (default is 1).
+
 ## Replicating our results
 
-You can run
+For the whitebox experiments, you can run
 ```
 python batched_sign_recovery_whitebox.py
 ```
-to simulate the sign recovery of all neurons in parallel using the settings that were used for the paper. You can edit the "Global Settings" section of this script
-to adjust parameters such as the number of threads, neurons to attack, etc.
+to replicate our results of the sign recovery of all neurons in parallel using the settings that were used for the paper.
+You can edit the "Global Settings" section of this script to adjust parameters such as the number of threads, neurons to attack, etc.
 
-After running the experiments, run
+For the blackbox experiments, you can run
+```
+python3 sign_recovery_blackbox.py --layer 1-3 --neuron 0-7 --j 8
+```
+
+After running either the whitebox or blackbox experiments (or both), run
 `python create_tables.py`
 to parse the results and create a summarized table per layer.
