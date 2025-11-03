@@ -39,48 +39,6 @@ import logging
 import sys
 from common import getLocalMatrixAndBias, ExperimentException, parseArguments_blackbox, parseRange, importModelParameters, getSavePath
 
-#DEBUG
-def decissionPlaneNormalVector_whitebox(weights, biases, xi):
-    M, b = getLocalMatrixAndBias(weights, biases, xi)
-    z = xi@M+b
-    a = np.argsort(z)[-1]
-    b = np.argsort(z)[-2]
-    assert(a != b)
-    m = M[:,a] - M[:,b]
-    if z[a] - z[b] > 0:
-        return -m
-    else:
-        return m
-
-#DEBUG
-def walkToDecisionPlaneBend_whitebox(weights, biases, x0, dx0, tol, inf):
-    dx = dx0.copy()
-    # Half displacement until we are not crossing the bend
-    while True:
-        if toggleStatesEqual(weights, biases, x0 + dx, x0):
-            break
-        dx /= 2
-        if np.dot(dx.flatten(),dx.flatten()) < (1e3*tol)**2:
-            raise ExperimentException("walkToDecisionPlaneBend_whitebox: Bend is too close.")
-    # Now double it until we cross it
-    while True:
-        if not toggleStatesEqual(weights, biases, x0 + dx, x0):
-            break
-        dx *= 2
-        if( np.dot(dx.flatten(),dx.flatten()) > inf**2):
-            raise ExperimentException(f"walkToDecisionPlaneBend_whitebox: Walked too far without finding a bend.")
-    # Binary search to find the point where the boundary was crossed
-    x = x0.copy()
-    timeout = 0
-    while np.dot(dx.flatten(), dx.flatten()) > tol**2:
-        if toggleStatesEqual(weights, biases, x + dx/2, x):
-            x = x + dx / 2
-        dx /= 2
-        timeout += 1
-        if timeout > 10000:
-            raise ExperimentException(f"walkToDecisionPlaneBend_whitebox: Timeout while searching for decision boundary bend.")
-    return x + dx
-
 def toggledNeuron(weights, biases, x0, x1):
     x00 = x0.copy()
     x11 = x1.copy()
@@ -217,7 +175,7 @@ def getWalkingDirection(weights, biases, neuronId, x0):
     dx = sig@invF # optimal wiggle
     return dx
 
-def analyzeDualPoint(f, weights, biases, xp, xm, layerId, neuronId, eps, tol, inf, pastRelusMax=0, cheatm = 0, cheatw = 0):
+def analyzeDualPoint(f, weights, biases, xp, xm, layerId, neuronId, eps, tol, inf, pastRelusMax=0):
     """
     Given the weights and biases of the previous layers and the current one up to signs, and xp,xm on opposite sides of a relu (at least eps away from it)
     for neuron neuronId in layer layerId, walks in the optimal direction and computes the distance until a future neuron is toggled on either side.
@@ -230,11 +188,6 @@ def analyzeDualPoint(f, weights, biases, xp, xm, layerId, neuronId, eps, tol, in
         yp = (xp.flatten()@M0 + b0.flatten())[neuronId]
         if yp < 0:
             xp, xm = xm, xp
-        
-        #DEBUG
-        MM,bb = getLocalMatrixAndBias(weights, biases, xp.flatten())
-        # print("y", yp)
-        # print("z", xp@MM+bb)
 
         dON = 0
         dOFF = 0
@@ -247,26 +200,14 @@ def analyzeDualPoint(f, weights, biases, xp, xm, layerId, neuronId, eps, tol, in
             n = M[:,neuronId].copy()*side_sign
             pastRelus = 0
             while True:
-                if cheatm: m = decissionPlaneNormalVector_whitebox(weights, biases, xA.flatten())
-                else: m = decissionPlaneNormalVector(f, xA, n, eps, tol)
-
-                #DEBUG
-                mm = decissionPlaneNormalVector_whitebox(weights, biases, xA.flatten())
-                print(side,'mb',m/np.linalg.norm(m))
-                print(side,'mw',mm/np.linalg.norm(mm))
+                m = decissionPlaneNormalVector(f, xA, n, eps, tol)
 
                 dx = (dx - np.dot(dx,m)*m/np.dot(m,m))*side_sign # project onto the decision boundary
 
                 xAp = xA + eps*m/np.linalg.norm(m)
                 xAm = xA - eps*m/np.linalg.norm(m)
 
-                if cheatw: xB = walkToDecisionPlaneBend_whitebox(weights, biases, xA, dx, tol, inf)
-                else: xB = walkToDecisionPlaneBend(f, xAp, xAm, dx, m, tol, inf=1e3)
-
-                #DEBUG
-                xBB = walkToDecisionPlaneBend_whitebox(weights, biases, xA, dx, tol, inf)
-                print(side,'db', np.linalg.norm(xB-xA))
-                print(side,'dw', np.linalg.norm(xBB-xA))
+                xB = walkToDecisionPlaneBend(f, xAp, xAm, dx, m, tol, inf=1e3)
 
                 if side=='ON': dON += np.linalg.norm((xB - xA).flatten())
                 else: dOFF += np.linalg.norm((xB - xA).flatten())
