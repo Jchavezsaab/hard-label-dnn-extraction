@@ -362,12 +362,6 @@ if __name__ == "__main__":
     # Load model
     model, weights, biases, Nlayers, shape = importModelParameters(f"../data/{args.model}.keras")
 
-    # Blackbox access to the model
-    def f(x):
-        # return np.argmax((model.predict(x.reshape((1,)+shape), verbose = 0)))
-        M,b = getLocalMatrixAndBias(weights, biases, x)
-        return np.argmax(x@M+b)
-
     # Target neurons/layers
     try:
         neurons = parseRange(args.neuron)
@@ -376,18 +370,41 @@ if __name__ == "__main__":
         print("Failed to parse neuron/layer range")
         exit(-1)
 
+    # Obfuscate the signs
+    whitebox_weights = [w.copy() for w in weights]
+    whitebox_biases = [b.copy() for b in biases]
+    real_signs = []
+    for layer in range(Nlayers):
+        if layer+1 in layers:
+            signs = np.sign(np.random.uniform(low=-1, high=+1, size=weights[layer].shape[1]))
+            signs[[x for x in range(weights[layer].shape[1]) if x not in neurons]] = 1
+        else:
+            signs = np.ones(weights[layer].shape[1])
+        real_signs.append(signs)
+        weights[layer] *= real_signs[-1].reshape(1,-1)
+        biases[layer] *= real_signs[-1]
+
+    # Blackbox access to the model
+    def f(x):
+        # return np.argmax((model.predict(x.reshape((1,)+shape), verbose = 0)))
+        M,b = getLocalMatrixAndBias(whitebox_weights, whitebox_biases, x)
+        return np.argmax(x@M+b)
+
     # Wrapper for the function that recovers sign of a single neuron
     def func(jobId):
         if jobId // len(neurons) >= len(layers): return
         layerId = layers[jobId // len(neurons)]
         neuronId = neurons[jobId % len(neurons)]
         duals = np.load(f"../data/dual_points_{args.model}/layer{layerId}_neuron{neuronId}.npy", allow_pickle=True)
+        obfuscated_weights = whitebox_weights[:layerId-1] + [weights[layerId-1]]
+        obfuscated_biases = whitebox_biases[:layerId-1] + [biases[layerId-1]]
         path = getSavePath(args.model, layerId, neuronId, runID=args.runID, mkdir=True, whitebox=False)
         with open(f"{path}log.log", 'w') as logFile:
             results=recoverSign(f, weights, biases, duals, layerId, neuronId, 1e-7, 1e-14, 1e14, args.Nmin, args.Nmax, args.pastRelusMax, logFile=logFile)
         df = pd.DataFrame(results)
         df['dOFF/dON'] = df.dOFF / df.dON
         df['Vote dOFF>dON'] = df.dOFF > df.dON
+        df['Real Sign'] = real_signs[layerId-1][neuronId]
         df.to_pickle(f'{path}df.pkl')
 
     if args.j == 1:

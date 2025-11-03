@@ -36,6 +36,9 @@ def analyze_df(df, whitebox=True):
     if '||vON||/||vOFF||' in df: _results['||vON||/||vOFF||'] = np.mean(df['||vON||/||vOFF||'])
     if 'speed_ON_mean1' in df: _results['sON>sOFF'] = 100.*(np.sum(df['speed_ON_mean1'].values>df['speed_OFF_mean1'])/len(df))
     if 'speed_ON_dirT1' in df: _results['sONdir>sOFFdir'] = 100.*(np.sum(df['speed_ON_dirT1'].values>df['speed_OFF_dirT1'])/len(df))
+    if not whitebox:
+        _results['sign'] = (df['Real Sign'][0])
+        _results['correct'] = '✔' if (_results['sign']*_results['votes+'] > _results['sign']*_results['votes-'])  else "WRONG"
     return _results
 
 if __name__=='__main__':
@@ -120,7 +123,7 @@ if __name__=='__main__':
                 continue 
             dfnID = pd.read_pickle(path)
 
-            _results = {'nID': nID} | analyze_df(dfnID)
+            _results = {'nID': nID} | analyze_df(dfnID, whitebox=False)
             results.append(_results)
 
         if len(results)==0: 
@@ -142,18 +145,20 @@ if __name__=='__main__':
         """)
 
         pd.options.display.precision = 2
-        df                           = df.sort_values(by='finalCL', ascending=False).reset_index(drop=True)
+        df                           = df.sort_values(by='nID', ascending=True).reset_index(drop=True)
         df['finalCL']                   = df['finalCL'].apply(lambda x: f"{x:.1f}%")
         df['tperP']                     = df['timePointMedian'].apply(lambda x: f"{x*1e3:.0f}ms")
         df['tTotal']                    = df['timeTotal'].apply(lambda x: f"{x:.0f}s")
         df                              = df[['nID'
                                             , 'nDual'
                                             , 'nExp'
+                                            , 'sign'
                                             , 'votes+'
                                             , 'votes-' 
                                             , 'finalCL'  
                                             , 'tperP'
                                             , 'tTotal'
+                                            , 'correct'
                                             ]]
         print(df.to_markdown())
         df['finalCL'] = df['finalCL'].apply(lambda x: x.replace('%', '\%'))
