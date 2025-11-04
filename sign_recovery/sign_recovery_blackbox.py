@@ -1,13 +1,11 @@
 # ---------------------------------------------------
 # Prepare environment
 # ---------------------------------------------------
-import pathlib
+import sys
 import os
 # Disable CUDA to avoid issues with multiprocessing
 os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
-# Restrict numpy to occupy only 1 thread on the CPU (multithreads are better employed by launching the analyzes of multiple neurons in parallel)
-os.environ['MKL_NUM_THREADS'] = '1'
-os.environ['OMP_NUM_THREADS'] = '1'
+
 # Prevent file locking errors
 os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"
 
@@ -16,28 +14,86 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 # Disable oneDNN custom operations (this avoid round-off errors from different computation orders)
 os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 
-# ---------------------------------------------------
-# TensorFlow
-# ---------------------------------------------------
+def parseArguments(argv=None):
+
+    # ---------------------------------------------------
+    # Parse arguments from command line
+    # ---------------------------------------------------
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description='Run sign recovery.',
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+
+    # ---- add arguments to parser
+    parser.add_argument('--model', type=str,
+                        help='The path to a keras.model (https://www.tensorflow.org/tutorials/keras/save_and_load).')
+    parser.add_argument('--layer', type=str,
+                        help='The ID of the target layers, separated by commas without spaces, e.g. "1,2,3".')
+    parser.add_argument('--neuron', type=str,
+                        help="Target neuron IDs, separated by commas and using - for ranges, e.g. '0,10,240-250'")
+    parser.add_argument('--runID', type=str,
+                        help="Custom run label (to avoid overwritting results from previous runs)")
+    parser.add_argument('--Nmin', type=int,
+                        help="Minimum number of experiments to be conducted per neuron.")
+    parser.add_argument('--Nmax', type=int,
+                        help="Maximum number of experiments to be conducted per neuron.")
+    parser.add_argument('--pastRelusMax', type=int,
+                        help="Number of past-layer relus that can be crossed before aborting an experiment.")
+    parser.add_argument('--j', type=int,
+                        help="Number of concurrent jobs.")
+
+    # ---- default values
+    defaults = {'model': "unitary_32_8x4_4_float64",
+                'layer': '1',
+                'neuron': '0',
+                'runID': None,
+                'Nmin': 20,
+                'Nmax': 1000,
+                'pastRelusMax': 0,
+                'j': 1
+                }
+
+    # ---- parse args
+    parser.set_defaults(**defaults)
+
+    if not argv: args = parser.parse_args()
+    else: args = parser.parse_args(argv)
+
+    return args
+
+import numpy as np
 import tensorflow as tf
+tf.keras.backend.set_floatx('float64')
 devices = tf.config.list_physical_devices('GPU')
 for device in devices:
     tf.config.experimental.set_memory_growth(device, True)
 
-# potentially set backend to high precision
+# ---------------------------------------------------
+# TensorFlow / NumPy
+# ---------------------------------------------------
+# If using multiple threads, turn off multithreading at the numpy level
+args = parseArguments(sys.argv[1:])
+if args.j != 1:
+    from multiprocessing import Pool
+    os.environ['MKL_NUM_THREADS'] = '1'
+    os.environ['OMP_NUM_THREADS'] = '1'
+    os.environ['OPENBLAS_NUM_THREADS'] = '1'
+
+import numpy as np
+import tensorflow as tf
 tf.keras.backend.set_floatx('float64')
+devices = tf.config.list_physical_devices('GPU')
+for device in devices:
+    tf.config.experimental.set_memory_growth(device, True)
+import tensorflow as tf
 
 # ---------------------------------------------------
 # Other imports
 # ---------------------------------------------------
-from multiprocessing import Pool
-import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 import time
-import logging
-import sys
-from common import getLocalMatrixAndBias, ExperimentException, parseArguments_blackbox, parseRange, importModelParameters, getSavePath
+from common import getLocalMatrixAndBias, ExperimentException, parseRange, importModelParameters, getSavePath
 
 def toggledNeuron(weights, biases, x0, x1):
     x00 = x0.copy()
@@ -283,7 +339,7 @@ def recoverSign(f, weights, biases, duals, layerId, neuronId, eps, tol, inf, Nmi
             result['nExp'] = N
             result['subpoint_time_seconds'] = time.time()-t1
             result['total_execution_time'] = time.time()-t0
-            if (logp < -3.6889 and N >= Nmin) or (N >= Nmax):
+            if (logp < -3.6889 and N >= Nmin) or (N >= Nmax): # logp < -2.9957: probability of wrong guess is less than 5%
                 print(f"Stopping after {N} experiments with confidence {logp:.2f} (votes+ {votes_p}, votes- {votes_m})", file=logFile)
                 break
             result['logp'] = logp
@@ -297,7 +353,7 @@ def recoverSign(f, weights, biases, duals, layerId, neuronId, eps, tol, inf, Nmi
 
 if __name__ == "__main__":
 
-    args = parseArguments_blackbox(sys.argv[1:])
+    args = parseArguments(sys.argv[1:])
     tf.keras.backend.set_floatx('float64')
 
     # Load model
@@ -341,7 +397,7 @@ if __name__ == "__main__":
         obfuscated_biases = whitebox_biases[:layerId-1] + [biases[layerId-1]]
         path = getSavePath(args.model, layerId, neuronId, runID=args.runID, mkdir=True, whitebox=False)
         with open(f"{path}log.log", 'w') as logFile:
-            results=recoverSign(f, weights, biases, duals, layerId, neuronId, 1e-7, 1e-14, 1e14, args.Nmin, args.Nmax, args.pastRelusMax, logFile=logFile)
+            results=recoverSign(f, obfuscated_weights, obfuscated_biases, duals, layerId, neuronId, 1e-7, 1e-14, 1e14, args.Nmin, args.Nmax, args.pastRelusMax, logFile=logFile)
         df = pd.DataFrame(results)
         df['dOFF/dON'] = df.dOFF / df.dON
         df['Vote dOFF>dON'] = df.dOFF > df.dON

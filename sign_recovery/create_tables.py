@@ -4,7 +4,9 @@ simplefilter(action="ignore", category=pd.errors.PerformanceWarning)
 import numpy as np
 import os
 import sys
-from common import parseArguments_whitebox, parseArguments_blackbox, getSavePath
+from common import getSavePath
+from sign_recovery_blackbox import parseArguments as parseArguments_blackbox
+from sign_recovery_whitebox import parseArguments as parseArguments_whitebox
 
 def get_alpha(votes_p, votes_m, n): 
     if  n==0: 
