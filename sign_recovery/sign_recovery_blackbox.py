@@ -348,6 +348,7 @@ def recoverSign(f, weights, biases, duals, layerId, neuronId, eps, tol, inf, Nmi
             print(e, file=logFile)
             continue
     print(f"L {layerId}, N {neuronId}: Experiments {N}/{NN}, votes+ {votes_p}, votes- {votes_m}, confidence {getConfidence(votes_m, votes_p)}", file=logFile)
+    print(f"Layer {layerId} neuron {neuronId} done. Experiments {N}/{NN}, votes+ {votes_p}, votes- {votes_m}, confidence {getConfidence(votes_m, votes_p)}.")
     return results
    
 
