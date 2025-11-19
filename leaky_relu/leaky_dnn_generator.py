@@ -75,5 +75,5 @@ def leakydnn(input_shape, hidden_sizes, num_classes):
     return model
 
 
-model = leakydnn([64], [64]*4, 10)
-model.save("../data/unitary_leaky_64_64x4_10_float64.keras")
+model = leakydnn([32], [32]*3, 10)
+model.save("../data/unitary_leaky_32_32x3_10_float64.keras")

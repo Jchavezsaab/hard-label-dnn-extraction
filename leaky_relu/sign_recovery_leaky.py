@@ -31,7 +31,7 @@ def parseArguments(argv=None):
                         help='Number of parallel threads')
 
     # ---- default values
-    defaults = {'model': "unitary_leaky_8_8x4_4_float64",
+    defaults = {'model': "unitary_leaky_32_32x3_10_float64",
                 'j': 1,
                 }
 
