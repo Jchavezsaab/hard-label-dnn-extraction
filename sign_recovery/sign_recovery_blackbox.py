@@ -44,7 +44,7 @@ def parseArguments(argv=None):
                         help="Number of concurrent jobs.")
 
     # ---- default values
-    defaults = {'model': "unitary_32_8x4_4_float64",
+    defaults = {'model': "unitary_32_32x3_10_float64",
                 'layer': '1',
                 'neuron': '0',
                 'runID': None,

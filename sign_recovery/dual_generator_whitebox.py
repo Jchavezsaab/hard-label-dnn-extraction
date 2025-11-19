@@ -211,7 +211,7 @@ def saveDuals(duals, name):
 def main():
 
     tf.keras.backend.set_floatx('float64')
-    name = "unitary_32_8x4_4_float64"
+    name = "unitary_32_32x3_10_float64"
     model = tf.keras.models.load_model(f"../data/{name}.keras")
     Nlayers = 0
     weights, biases = [],[]

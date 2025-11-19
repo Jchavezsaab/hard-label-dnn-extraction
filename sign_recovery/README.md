@@ -65,7 +65,7 @@ To simulate the blackbox sign recovery, run
 python sign_recovery_blackbox.py --model {model_path} --layer {layerID} --neuron {neuronID} --j {num threads}
 ```
 This performs the recovery of signs using only blackbox functionality, but does assume that perfect signatures are provided beforehand. It is only feasible for
-relatively small networks (the default for `--model` is `unitary_32_8x4_4_float64`). Both `--layer` and `--neuron` admit a single number or comma-separated
+relatively small networks (the default for `--model` is `unitary_32_32x3_10_float64`). Both `--layer` and `--neuron` admit a single number or comma-separated
 numbers or ranges (e.g. `--neuron 1,2,5-7`). The `--j` flags allows one to launch the recovery for different neurons with concurrent threads (default is 1).
 
 ## Replicating our results
@@ -81,7 +81,7 @@ You can edit the "Global Settings" section of this script to adjust parameters s
 
 For the blackbox experiments, you can run
 ```
-python sign_recovery_blackbox.py --model unitary_32_8x4_4_float64 --layer 1-3 --neuron 0-7 --j 8
+python sign_recovery_blackbox.py --model unitary_32_32x3_10_float64 --layer 1-3 --neuron 0-7 --j 8
 ```
 
 After running either the whitebox or blackbox experiments (or both), run
