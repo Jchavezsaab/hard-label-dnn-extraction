@@ -115,9 +115,9 @@ if __name__=='__main__':
     print("================================")
     print()
     args = parseArguments_blackbox(sys.argv[1:])
-    for lID in range(1, 5):
+    for lID in range(1, 4):
         results = []
-        N_NEURONS = 8
+        N_NEURONS = 32
         for nID in range(N_NEURONS):
             path = f"{getSavePath(args.model, lID, nID, args.runID, mkdir=False, whitebox=False)}df.pkl"
 
