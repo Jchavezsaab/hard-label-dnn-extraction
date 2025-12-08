@@ -206,9 +206,10 @@ def outputFunction(weights, biases, x0, m, alpha=0.1):
         M[y < 0] *= alpha
         z = np.linalg.pinv(M)@z
         y = y@M + biases[i]
+    z /= np.linalg.norm(z)
     return z
 
-def analyzeDecisionPoint(f, weights, biases, layerId, x, whitebox_weights, whitebox_biases):
+def analyzeDecisionPoint(f, weights, biases, layerId, x):
     """
     Input: The weights and biases of previous layers and of the current one up to signs,
     oracle access to the network output f, a point x at the decision boundary, and a layer number.
@@ -219,22 +220,17 @@ def analyzeDecisionPoint(f, weights, biases, layerId, x, whitebox_weights, white
     y = hiddenLayerValuesLeaky(weights[:layerId], biases[:layerId], x)
     s = np.sign(y)
     c = np.abs(outputFunction(weights[:layerId], biases[:layerId], x, m))
-    #DEBUG
-    MM,bb = getLocalMatrixAndBiasLeaky(whitebox_weights[:layerId], whitebox_biases[:layerId], x)
-    yyi = x@MM+bb
-    yyi[yyi < 0] *= 0.1
-    G=getLocalMatrixAndBiasLeaky(whitebox_weights[layerId:], whitebox_biases[layerId:], yyi)[0]
-    MM,bb=getLocalMatrixAndBiasLeaky(whitebox_weights, whitebox_biases, x)#DEB
-    z = x@MM+bb
-    C = G[:,np.argmax(z)] - G[:,np.argsort(z)[-2]]
-    mm = MM[:,np.argmax(z)] - MM[:,np.argsort(z)[-2]]
-    # print('m',m/np.linalg.norm(m))
-    # print('M',mm/np.linalg.norm(mm))
-    C[yyi < 0] *= 0.1
-    # print('C',(C/np.linalg.norm(C))[:2])
-    # print('c',(c/np.linalg.norm(c))[:2])
-    M,b = getLocalMatrixAndBiasLeaky(weights[:layerId], biases[:layerId], x)
     return [s,c,m]
+
+def getConfidence(votes_m, votes_p): 
+    # Check confidence
+    if (votes_m==0) and (votes_p==0): 
+        return 0.0
+    N = max(votes_p, votes_m)
+    n = min(votes_p, votes_m)
+    logp = -2*(n+N)*(0.5 - n/(n+N))**2 
+    if np.isnan(logp): logp = 0.0
+    return logp 
 
 if __name__ == "__main__":
     args = parseArguments(sys.argv[1:])
@@ -292,18 +288,18 @@ if __name__ == "__main__":
                 # Stop once all recovered signs are correct
                 if np.all(recovered_signs == real_signs[layer-1]) and len(decisionBoundaryPoints)>100:
                     print(f"Layer: {layer}, Experiments: {len(decisionBoundaryPoints)}, Correct signs: {sum(recovered_signs == real_signs[layer-1])}/{weights[layer-1].shape[1]}")
-                    weights[layer-1] *= recovered_signs.reshape(1,-1)
+                    weights[layer-1] *= recovered_signs.reshape(1,-1) # Update obfuscated weights with the recovered signs
                     break
                 # else:
-                    # print("Wrong signs:")
-                    # for neuron in [x for x in range(weights[layer-1].shape[1]) if np.isnan(recovered_signs[x]) or recovered_signs[x] != real_signs[layer-1][x]]:
-                    #     print(f"neuron {neuron} (+/- cases: {nON[neuron]}/{nOFF[neuron]})", end = " ; ")
-                    # print("\n")
+                #     print("\nWrong signs:")
+                #     for neuron in [x for x in range(weights[layer-1].shape[1]) if np.isnan(recovered_signs[x]) or recovered_signs[x] != real_signs[layer-1][x]]:
+                #         print(f"neuron {neuron} (+/- cases: {nON[neuron]}/{nOFF[neuron]})", end = " ; ")
+                #     print("\n")
 
             # Get new decision-boundary point
             if(args.j == 1):
                 xi = getDecisionPointLeaky(f, shape)
-                si, ci, mi = analyzeDecisionPoint(f, weights, biases, layer, xi, whitebox_weights, whitebox_biases)
+                si, ci, mi = analyzeDecisionPoint(f, weights, biases, layer, xi)
                 decisionBoundaryPoints.append(xi)
                 m.append(mi)
                 s.append(si)
@@ -312,7 +308,7 @@ if __name__ == "__main__":
                 def func(seed):
                     try:
                         xi = getDecisionPointLeaky(f,shape, seed=seed)
-                        return [xi] + analyzeDecisionPoint(f, weights, biases, layer, xi, whitebox_weights, whitebox_biases)
+                        return [xi] + analyzeDecisionPoint(f, weights, biases, layer, xi)
                     except ExperimentException as e:
                         return func(seed+100)
                 with Pool(args.j) as p:
