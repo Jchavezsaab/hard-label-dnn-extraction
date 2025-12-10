@@ -166,7 +166,7 @@ if __name__=='__main__':
         df = pd.concat([df, average_df, std_df])
         df['finalCL']                   = df['finalCL'].apply(lambda x: f"{x:.1f}%")
         df['timePointMedian']                     = df['timePointMedian'].apply(lambda x: f"{x*1e3:.0f}ms")
-        df['timeTotal']                    = df['timeTotal'].apply(lambda x: f"{x:.0f}s")
+        df['timeTotal']                    = df['timeTotal'].apply(lambda x: f"{x*1e3:.0f}ms")
         print(df.to_markdown())
         print()
    
