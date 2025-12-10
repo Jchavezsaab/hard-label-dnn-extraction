@@ -148,9 +148,6 @@ if __name__=='__main__':
 
         pd.options.display.precision = 2
         df                           = df.sort_values(by='nID', ascending=True).reset_index(drop=True)
-        df['finalCL']                   = df['finalCL'].apply(lambda x: f"{x:.1f}%")
-        df['tperP']                     = df['timePointMedian'].apply(lambda x: f"{x*1e3:.0f}ms")
-        df['tTotal']                    = df['timeTotal'].apply(lambda x: f"{x:.0f}s")
         df                              = df[['nID'
                                             , 'nDual'
                                             , 'nExp'
@@ -158,13 +155,18 @@ if __name__=='__main__':
                                             , 'votes+'
                                             , 'votes-' 
                                             , 'finalCL'  
-                                            , 'tperP'
-                                            , 'tTotal'
+                                            , 'timePointMedian'
+                                            , 'timeTotal'
                                             , 'correct'
                                             ]]
+        average_row = df.mean(numeric_only=True)
+        average_df = pd.DataFrame([average_row], index=['Average'])
+        std_row = df.std(numeric_only=True)
+        std_df = pd.DataFrame([std_row], index=['STD'])
+        df = pd.concat([df, average_df, std_df])
+        df['finalCL']                   = df['finalCL'].apply(lambda x: f"{x:.1f}%")
+        df['timePointMedian']                     = df['timePointMedian'].apply(lambda x: f"{x*1e3:.0f}ms")
+        df['timeTotal']                    = df['timeTotal'].apply(lambda x: f"{x:.0f}s")
         print(df.to_markdown())
-        df['finalCL'] = df['finalCL'].apply(lambda x: x.replace('%', '\%'))
-        df['tperP']   = df['tperP'].apply(lambda x: x.replace('ms', '\,ms'))
-        df['tTotal']  = df['tTotal'].apply(lambda x: x.replace('s', '\,s'))
         print()
    
