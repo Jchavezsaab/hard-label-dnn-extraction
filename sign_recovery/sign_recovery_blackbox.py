@@ -33,7 +33,7 @@ def parseArguments(argv=None):
     parser.add_argument('--neuron', type=str,
                         help="Target neuron IDs, separated by commas and using - for ranges, e.g. '0,10,240-250'")
     parser.add_argument('--runID', type=str,
-                        help="Custom run label (to avoid overwritting results from previous runs)")
+                        help="Custom run label (to avoid overwritting results from previous runs), can be any string.")
     parser.add_argument('--Nmin', type=int,
                         help="Minimum number of experiments to be conducted per neuron.")
     parser.add_argument('--Nmax', type=int,
@@ -218,6 +218,12 @@ def getWalkingDirection(weights, biases, neuronId, x0):
     Given the weights and biases of previous layers and the current one up to signs, computes the optimal walking direction
     for neuron neuronId by multiplying its signature by the pseudoinverse of the local matrix.
     """
+    M,_ = getLocalMatrixAndBias(weights, biases, x0.flatten())
+    if np.linalg.cond(M)<1e14:
+        y = np.zeros(shape=[weights[-1].shape[1]])
+        y[neuronId] = 1
+        dx = y@np.linalg.pinv(M)
+        return dx
     if len(weights) > 1:
         Fm1,bm1 = getLocalMatrixAndBias(weights[:-1], biases[:-1], x0.flatten())
         y = x0.flatten()@Fm1 + bm1.flatten()
@@ -275,7 +281,9 @@ def analyzeDualPoint(f, weights, biases, xp, xm, layerId, neuronId, eps, tol, in
 
                 pastRelus += 1
                 if pastRelus > pastRelusMax:
-                    raise ExperimentException(f"analyzeDualPoint: Too many past ReLUs.")
+                    if side=='ON': dON = 1e10
+                    else: dOFF = 1e10
+                    break
                 prevLayer, prevNeuron = toggledNeuron(weights[:layerId], biases[:layerId], xA, xB)
                 M,b = getLocalMatrixAndBias(weights[:prevLayer], biases[:prevLayer], xB.flatten())
                 n = M[:,prevNeuron].copy()
@@ -288,6 +296,8 @@ def analyzeDualPoint(f, weights, biases, xp, xm, layerId, neuronId, eps, tol, in
         result['dON'] = dON
         result['dOFF'] = dOFF
         result['succcess'] = True
+        if dON==1e10 and dOFF==1e10:
+            raise ExperimentException(f"analyzeDualPoint: Too many past relus on both sides.")
     except ExperimentException as e:
         raise ExperimentException(f"analyzeDualPoint: {e.message}")
     return result
@@ -327,7 +337,7 @@ def recoverSign(f, weights, biases, duals, layerId, neuronId, eps, tol, inf, Nmi
         NN += 1
         try:
             t1 = time.time()
-            result = (analyzeDualPoint(f, weights, biases, xp, xm, layerId, neuronId, eps=eps, tol=tol, inf=inf, pastRelusMax=pastRelusMax))
+            result = analyzeDualPoint(f, weights, biases, xp, xm, layerId, neuronId, eps=eps, tol=tol, inf=inf, pastRelusMax=pastRelusMax)
             result['dual_point_id'] = dual_point_id
             dON, dOFF = result['dON'], result['dOFF']
             if dON < dOFF: 
