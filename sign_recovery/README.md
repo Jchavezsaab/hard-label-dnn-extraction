@@ -19,9 +19,9 @@ as posible to the boundary, and one just past the boundary, respectively, hence 
 
 Alternatively, the precomputed dual point files can be downloaded separately from the [precomputation-for-hard-label-dnn-extraction](https://github.com/Jchavezsaab/precomputation-for-hard-label-dnn-extraction) repository.
 
-# Whitebox analysis of a single neuron
+# Whitebox analysis
 
-In order to simulate the sign recovery of a single neuron, run
+In order to run the whitebox attack on a relu-based dnn, run
 
 ```
 python sign_recovery_whitebox.py --model {model_name} --layerID {layerID} --neuronID {neuronID} --j {num threads}
@@ -63,7 +63,7 @@ You can also provide the following options:
 
 # Blackbox analysis
 
-To simulate the blackbox sign recovery, run
+To simulate the blackbox sign recovery on a relu dnn, run
 
 ```
 python sign_recovery_blackbox.py --model {model_path} --layer {layerID} --neuron {neuronID} --j {num threads}
@@ -72,9 +72,20 @@ This performs the recovery of signs using only blackbox functionality, but does 
 relatively small networks (the default for `--model` is `unitary_32_32x3_10_float64`). Both `--layer` and `--neuron` admit a single number or comma-separated
 numbers or ranges (e.g. `--neuron 1,2,5-7`). The `--j` flags allows one to launch the recovery for different neurons with concurrent threads (default is 1).
 
-## Replicating our results
+# Leaky Relus
 
-### Whitebox
+You can also simulate a blackbox sign recovery on a leaky-relu dnn by running 
+```
+python sign_recovery_leaky.py --model {model_name} --j {num_threads}
+```
+The `model_name` must be the name of a model in the `data` directory (default is `unitary_leaky_32_32x3_10_float64`),
+and `j` is the number of parallel threads (default 1). This attack does not require any precomputed dual points (they are computed on the fly) and is much more efficient, so it always runs for all layers and all neurons.
+
+The attack assumes that the signatures have already been recovered, but is fully blackbox other than that.
+
+# Replicating our results
+
+## Whitebox
 For the whitebox experiments, you can run:
 ```
 python sign_recovery_whitebox.py --model cifar10_3x256_64_10_float64 --layer 1 --neuron 0-255 --nExpMax 10000 --nExpMin 100 --choose_dx perfect_control_along_decision_boundary --analyzeWiggleSensitivity True --analyzeSpeed True --j 10
@@ -87,15 +98,22 @@ python sign_recovery_whitebox.py --model cifar10_3x256_64_10_float64 --layer 4 -
 ```
 to replicate our results of the sign recovery of all neurons in parallel (adjust `--j 10` to your liking) using the settings that were used for the paper.
 
-### Blackbox
+## Blackbox
 For the blackbox experiments, you can run
 ```
 python sign_recovery_blackbox.py --model unitary_32_32x3_10_float64 --layer 1-3 --neuron 0-7 --j 8
 ```
 
-### Parsing
+## Parsing
 After running either the whitebox or blackbox experiments (or both), run
 ```
 python create_tables.py
 ```
 to parse the results and create a summarized table per layer.
+
+## Leaky Relu
+For the leaky relu network, run
+```
+python sign_recovery_leaky.py --model unitary_leaky_32_32x3_10_float64 --j 8
+```
+This will attack all neurons at once and print a summary of the results.
