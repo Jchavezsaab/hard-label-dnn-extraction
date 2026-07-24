@@ -13,11 +13,11 @@ The code in this directory requires the following pip packages:
 Our sign recovery attacks perform a statistical test using a list of dual points for each neuron, which are assumed to have already been precomputed using the code in the `signature_recovery` directory.
 
 The dual points should be saved to separate files in `data/dual_points_{model_name}/layer{layerId}_neuron{nueronId}.npy`.
-Each file should contain a numpy array of shape `N x M x 3`, where `N` is a large number of samples (preferably above 10,000)
+Each file should contain a numpy array of shape `N x 3 x M`, where `N` is a large number of samples (preferably above 10,000)
 and `M` is the network's input size. Each entry should be a triplet of points: one just before the relu boundary, one as close
 as posible to the boundary, and one just past the boundary, respectively, hence the `3`.
 
-Alternatively, the precomputed dual point files can be downloaded separately from the [precomputation-for-hard-label-dnn-extraction](https://github.com/Jchavezsaab/precomputation-for-hard-label-dnn-extraction) repository.
+If you only want to test sign recovery without running signature recovery, see `generators/README.md` for a shortcut to generate or download these files.
 
 # Whitebox analysis
 

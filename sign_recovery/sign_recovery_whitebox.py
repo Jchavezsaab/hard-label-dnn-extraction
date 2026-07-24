@@ -745,7 +745,7 @@ def recoverSign(weights, biases, duals, layerId, neuronId, nExpMin, nExpMax, sav
         if x_dual is None: 
             print(f"WARNING: Could not complete {nExpMax} experiments; got only {nExp} experiments with the amount of dual points provided.")
             break 
-
+        if len(x_dual.shape) > 1: x_dual = x_dual[1] # Dual point was a triplet rather than a single point
         if not ndebug: logger.debug(f"\n\n=================== Experiment ID #{nExp} \t Dual Point ID: {dual_point_id} ===================")
 
         # =========== ANALYZE THE DUAL POINT ===========

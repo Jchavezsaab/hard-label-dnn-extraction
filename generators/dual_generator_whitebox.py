@@ -14,6 +14,7 @@ os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 # Disable oneDNN custom operations (this avoid round-off errors from different computation orders)
 os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
+import sys
 
 # ---------------------------------------------------
 # TensorFlow
@@ -176,7 +177,7 @@ def findDualPoint(shape, weights, biases, eps, tol, inf):
             x, c0, c1 = findDecissionBoundary(weights, biases, x0, dx0, tol, inf)
             break
         except ExperimentException as e:
-            print(e)
+            # print(e)
             continue
     m = decissionPlaneNormalVector(weights, biases, x)
     timeout = 0
@@ -188,7 +189,7 @@ def findDualPoint(shape, weights, biases, eps, tol, inf):
             layerId, neuronId = toggledNeuron(weights, biases, xdual, xdual+dx)
             return xdual, layerId, neuronId, dx
         except ExperimentException as e:
-            print(e)
+            # print(e)
             timeout += 1
             if timeout > 5:
                 return findDualPoint(shape, weights, biases, eps, tol, inf)
@@ -211,7 +212,7 @@ def saveDuals(duals, name):
 def main():
 
     tf.keras.backend.set_floatx('float64')
-    name = "unitary_32_32x3_10_float64"
+    name = sys.argv[1]
     model = tf.keras.models.load_model(f"../data/{name}.keras")
     Nlayers = 0
     weights, biases = [],[]
