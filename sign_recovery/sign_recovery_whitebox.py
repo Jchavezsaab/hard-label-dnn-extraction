@@ -644,8 +644,8 @@ def analyze_df(df):
         df[f"dOFF>dON{i}"] = df[f"dOFF_patch_{i}"] > df[f"dON_patch_{i}"]
         df[f"dOFF<dON{i}"] = df[f"dOFF_patch_{i}"] < df[f"dON_patch_{i}"]
 
-    df[f"votesOFF>ON"] = df[[f"dOFF>dON{i}" for i in range(1, nT+1)]].sum(1)
-    df[f"votesOFF<ON"] = df[[f"dOFF<dON{i}" for i in range(1, nT+1)]].sum(1)
+    df[f"votesOFF>ON"] = df[[f"dOFF>dON{i}" for i in range(1, nT+1)]].sum(axis=1)
+    df[f"votesOFF<ON"] = df[[f"dOFF<dON{i}" for i in range(1, nT+1)]].sum(axis=1)
 
     #df['perc_diff'] = np.abs(df.dOFF-df.dON) / (df.dOFF + df.dON) * 100.
     #df = df[df.perc_diff > PERC_DIFF_LIM]
@@ -688,7 +688,7 @@ def analyze_df(df):
 # ---------------------------------------------------
 # Main function to recover the sign and analyze all statistics from a single neuron
 # ---------------------------------------------------
-def recoverSign(weights, biases, duals, layerId, neuronId, nExpMin, nExpMax, savePath, eps=1e-6, tol=1e-6, analyze_wiggle_sensitivity=False, analyze_speed=False, handle_previous_layer_toggles=False, nToggles=True, choose_dx=None, ndebug=True):
+def recoverSign(weights, biases, duals, layerId, neuronId, nExpMin, nExpMax, savePath, eps=1e-6, tol=1e-6, analyze_wiggle_sensitivity=False, analyze_speed=False, handle_previous_layer_toggles=False, nToggles=True, choose_dx=None, ndebug=True, verbose=True):
 
     t0 = time.time() # start timer
 
@@ -771,7 +771,7 @@ def recoverSign(weights, biases, duals, layerId, neuronId, nExpMin, nExpMax, sav
             logp = analyze_df(df)['final_logp']
             tpassednow = time.time() - t0 # check runtime
             if (logp < -3.6889 and nExp >= nExpMin) or (nExp >= nExpMax): # logp < -2.9957: probability of wrong guess is less than 5%
-                printProgressBar(nExp, nExpMax, prefix = 'Progress:', suffix = f"Completed early with 95% confidence! \t({int(100*fail/(nExp+fail))}% exclusions, logp={int(100*logp)/100}, Seconds passed: {tpassednow:.0f}))     \n", length = 50)
+                printProgressBar(nExp, nExpMax, prefix = f"(Layer {layerId}, Neuron {neuronId})Progress:", suffix = f"Completed early with 95% confidence! \t({int(100*fail/(nExp+fail))}% exclusions, logp={int(100*logp)/100}, Seconds passed: {tpassednow:.0f}))     \n", length = 50)
                 break 
 
         except ExperimentException as ex:
@@ -779,7 +779,7 @@ def recoverSign(weights, biases, duals, layerId, neuronId, nExpMin, nExpMax, sav
             if not ndebug: logger.debug(str(ex))
 
         tpassednow = time.time() - t0 # check runtime
-        printProgressBar(nExp, nExpMax, prefix = 'Progress:', suffix = f"Complete\t({int(100*fail/(nExp+fail))}% exclusions, logp={int(100*logp)/100}, Seconds passed: {tpassednow:.0f}, nExp: {nExp}, DualPointID: {dual_point_id})     ", length = 50)
+        if verbose: printProgressBar(nExp, nExpMax, prefix = f"(Layer {layerId}, Neuron {neuronId})Progress:", suffix = f"Complete\t({int(100*fail/(nExp+fail))}% exclusions, logp={int(100*logp)/100}, Seconds passed: {tpassednow:.0f}, nExp: {nExp}, DualPointID: {dual_point_id})     ", length = 50)
 
     # ---------------------------------------------------
     # Save Results
@@ -885,7 +885,7 @@ if __name__=='__main__':
         neuronId = neurons[jobId % len(neurons)]
         duals = np.load(f"../data/dual_points_{args.model}/layer{layerId}_neuron{neuronId}.npy", allow_pickle=True)
         path = getSavePath(args.model, layerId, neuronId, runID=args.runID, mkdir=True, whitebox=True)
-        recoverSign(weights, biases, duals, layerId, neuronId, args.nExpMax, args.nExpMin, path, eps=1e-6, tol=1e-6, analyze_wiggle_sensitivity=args.analyzeWiggleSensitivity, analyze_speed=args.analyzeSpeed, handle_previous_layer_toggles=args.handlePrevLayerToggles, nToggles=args.nToggles, choose_dx=args.choose_dx, ndebug=args.nDebug)
+        recoverSign(weights, biases, duals, layerId, neuronId, args.nExpMax, args.nExpMin, path, eps=1e-6, tol=1e-6, analyze_wiggle_sensitivity=args.analyzeWiggleSensitivity, analyze_speed=args.analyzeSpeed, handle_previous_layer_toggles=args.handlePrevLayerToggles, nToggles=args.nToggles, choose_dx=args.choose_dx, ndebug=args.nDebug, verbose=jobId%args.j==(len(neurons)*len(layers))%args.j)
 
     if args.j == 1:
         for i in range(len(neurons)*len(layers)):
