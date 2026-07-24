@@ -1,70 +1,101 @@
-This subdirectory of the code demonstrates the ability of an adversary to recover the
-sign of every neuron in the network, assuming that the signatures of the target layer
-have already been collected and that the signatures and signs of the previous layers are
-already solved.
+This subdirectory of the code demonstrates the ability of an adversary to recover the sign of every neuron in the network, assuming that the signatures of the target layer have already been collected and that the signatures and signs of the previous layers are already solved.
 
-CAUTION: As we say in the paper, the purpose of this code is to prove that the ideas described
-in the papere are effective (i.e., that patch distances are on average larger when the target
-neuron is off), not to be an actual attack. As such, the code uses some whitebox functions to
-determine the optimal walking direction and to detect when a future neuron has toggled. These
-can in principle be implemented in a blackbox setting in polynomial time using the techniques
-described in the paper.
+# Requirements
+The code in this directory requires the following pip packages:
+- numpy
+- pandas
+- matplotlib
+- tabulate
+- tensorflow
 
-## Precomputed dual points
+# Precomputed dual points
 
-The attack performs a statistical test using a list of dual points for each neuron, which
-are assumed to have already been precomputed using the code in the `signature_recovery`
-directory. The dual points should be saved to separate files named `layerX_neuronY.npy`
-in `data/dual_points_{model_name}`.
-Each file should contain a numpy array of shape `N x M`, where `N` is a large number
-of samples (preferably above 10,000) and `M` is the network's input size.
+Our sign recovery attacks perform a statistical test using a list of dual points for each neuron, which are assumed to have already been precomputed using the code in the `signature_recovery` directory.
 
-For the sample neural network, these can be downloaded from:
-https://drive.google.com/file/d/1mFfKlLgE0ZnGPAYN8tPRtb2iYpP5QgfY/view?usp=sharing
-The zip file must be extracted to `data/dual_points_cifar10_3x256_64_10_float64/`.
+The dual points should be saved to separate files in `data/dual_points_{model_name}/layer{layerId}_neuron{nueronId}.npy`.
+Each file should contain a numpy array of shape `N x M x 3`, where `N` is a large number of samples (preferably above 10,000)
+and `M` is the network's input size. Each entry should be a triplet of points: one just before the relu boundary, one as close
+as posible to the boundary, and one just past the boundary, respectively, hence the `3`.
 
-## Analyzing a single neuron
+Alternatively, the precomputed dual point files can be downloaded separately from the [precomputation-for-hard-label-dnn-extraction](https://github.com/Jchavezsaab/precomputation-for-hard-label-dnn-extraction) repository.
+
+# Whitebox analysis of a single neuron
 
 In order to simulate the sign recovery of a single neuron, run
 
 ```
-python3 --model {model_path} --layerID {layerID} --neuronID {neuronID} --filepath_load_x0 {filepath_load_x0}
+python sign_recovery_whitebox.py --model {model_name} --layerID {layerID} --neuronID {neuronID} --j {num threads}
 ```
-where `model_path` is the path to the neural network being attacked, `layerID` and `neuronID` identify the target neuron, and `filepath_load_x0`
-is the path to the directory containing the precomputed dual points.
+where `model_name` is the name of the neural network being attacked (should be saved to `data/{model_name}.keras`, default is `cifar10_3x256_64_10_float64`),
+`layerID` and `neuronID` identify the target neuron. Both `--layer` and `--neuron` admit a single number or comma-separated
+numbers or ranges (e.g. `--neuron 1,2,5-7`). The `--j` flags allows one to launch the recovery for different neurons with concurrent threads (default is 1).
 
-The results of the test are saved to `results/{model_path}/{layerID}/{neuronID}`
+
+CAUTION: As we say in the paper, the purpose of this script is to prove that the ideas described
+in the papere are effective (i.e., that patch distances are on average larger when the target
+neuron is off), not to be an actual attack. As such, it recreates the statistics that would be
+collected from the real attack, but makes use of whitebox information about the model for efficiency
+purposes at two specific steps:
+- Computing the normal vector to the decision plane
+- Measuring the distance along the decision plane until another neuron toggles
+
+The results of the test are saved to `results/whitebox/{model_path}/{layerID}/{neuronID}`
 
 You can also provide the following options:
-    `--nExp {int}`: Max number of experiments to use. The program will exit once it has completed this many samples, but it may exit early
+- `--nExpMax {int}`: Max number of experiments to use. The program will exit once it has completed this many samples, but it may exit early if it
                     has achieved a 95% confidence level on the sign guess. The default value is 400.
-    `--nExpMin {int}`: Minimum number of experiments to perform; the program will not exit before this many samples are completed, regardless
+- `--nExpMin {int}`: Minimum number of experiments to perform; the program will not exit before this many samples are completed, regardless
                     of the confidence level. The default value is 25.
-    `--nToggles {int}`: Determines how many future-layer toggles have happen before the walk stops and distance is measured. Default is 1.
-    `--handlePrevLayerToggles <True|False>`: If set to True (default), the attack will recompute the optimal walking direction whenever a previous-layer
+- `--nToggles {int}`: Determines how many future-layer toggles have to happen before the walk stops and distance is measured. Default is 1.
+- `--handlePrevLayerToggles <True|False>`: If set to True (default), the attack will recompute the optimal walking direction whenever a previous-layer
                                             neuron has toggled. Otherwise, it will discard any experiment where a previous-layer neuron was toggled.
-    `--choose_dx {perfect_control_along_decision_boundary | along_decision_boundary}`:
+- `--choose_dx {perfect_control_along_decision_boundary | along_decision_boundary}`:
                     Determines the walking direction for the experiments. `along_decision_boundary` (default) uses the normal vector of the critical plane projected
                     onto the decision plane (which is what we would be able to compute in a blackbox setting), whereas `perfect_control_along_decision_boundary`
                     starts with a walking direction that only changes the target neuron while keeping all the non-target neurons of the target layer fixed,
                     and then projects it onto the decision plane (this technique only applies for hidden layers 1 and 4 of our network, where the dimension of control is total).
-    `--analyzeWiggleSensitivity <True | False>`: If set to True, records data on the rate of change of the target layer's vector under the chosen walking direction, for
+- `--analyzeWiggleSensitivity <True | False>`: If set to True, records data on the rate of change of the target layer's vector under the chosen walking direction, for
                     ON vs OFF sides. Default is False.
-    `--analyzeSpeed <True | False>`: If set to True, records data on the rate of change of each future-layer neuron under the chosen walking direction, for
+- `--analyzeSpeed <True | False>`: If set to True, records data on the rate of change of each future-layer neuron under the chosen walking direction, for
                     the ON vs OFF sides. Default is False.
-    `--nDebug {nDebug} <True | False>` If set to True, skips logging and several consistency checks in favor of performance. Default is False.
+- `--nDebug {nDebug} <True | False>` If set to True, skips logging and several consistency checks in favor of performance. Default is True.
 
+
+# Blackbox analysis
+
+To simulate the blackbox sign recovery, run
+
+```
+python sign_recovery_blackbox.py --model {model_path} --layer {layerID} --neuron {neuronID} --j {num threads}
+```
+This performs the recovery of signs using only blackbox functionality, but does assume that perfect signatures are provided beforehand. It is only feasible for
+relatively small networks (the default for `--model` is `unitary_32_32x3_10_float64`). Both `--layer` and `--neuron` admit a single number or comma-separated
+numbers or ranges (e.g. `--neuron 1,2,5-7`). The `--j` flags allows one to launch the recovery for different neurons with concurrent threads (default is 1).
 
 ## Replicating our results
 
-You can run
+### Whitebox
+For the whitebox experiments, you can run:
 ```
-python batched_sign_recovery
+python sign_recovery_whitebox.py --model cifar10_3x256_64_10_float64 --layer 1 --neuron 0-255 --nExpMax 10000 --nExpMin 100 --choose_dx perfect_control_along_decision_boundary --analyzeWiggleSensitivity True --analyzeSpeed True --j 10
 ```
-to simulate the sign recovery of all neurons in parallel using the settings that were used for the paper. You can edit the "Global Settings" section of this script
-to adjust parameters such as the number of threads, neurons to attack, etc.
+```
+python sign_recovery_whitebox.py --model cifar10_3x256_64_10_float64 --layer 2,3 --neuron 0-255 --nExpMax 10000 --nExpMin 1000 --choose_dx along_decision_boundary --analyzeWiggleSensitivity True --analyzeSpeed True --j 10
+```
+```
+python sign_recovery_whitebox.py --model cifar10_3x256_64_10_float64 --layer 4 --neuron 0-63 --nExpMax 10000 --nExpMin 100 --choose_dx perfect_control_along_decision_boundary --analyzeWiggleSensitivity True --analyzeSpeed True --j 10
+```
+to replicate our results of the sign recovery of all neurons in parallel (adjust `--j 10` to your liking) using the settings that were used for the paper.
 
-## Parsing the results
-After running the experiments, run
-`python create_tables.py`
+### Blackbox
+For the blackbox experiments, you can run
+```
+python sign_recovery_blackbox.py --model unitary_32_32x3_10_float64 --layer 1-3 --neuron 0-7 --j 8
+```
+
+### Parsing
+After running either the whitebox or blackbox experiments (or both), run
+```
+python create_tables.py
+```
 to parse the results and create a summarized table per layer.

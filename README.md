@@ -6,7 +6,7 @@ The code is split into two phases:
 2. Sign recovery
 see the README file in each directory for a detailed explanation.
 
-The `data/` directory contains a .keras file for the neural network that we used to illustrate the attack. This is a 'real' network which
-was trained on the CIFAR-10 dataset, achieving 0.52 accuracy. It also contains arrays of precomputed dual points for this network, which
-were generated using the code in `signature_recovery`.
+The `data/` directory contains the following .keras files for the neural networks that we used to illustrate the attack:
+- `cifar10_3x256_64_10_float64.keras` This is a 'real' network which
+was trained on the CIFAR-10 dataset, achieving 0.52 accuracy.
 

@@ -5,7 +5,7 @@ Collection of functions and parameters for analysing a Deep Neural Network
 
 import numpy as np
 from keras import Model
-from blackbox import getHiddenVector,getLocalMatrixAndBias
+from common import getHiddenVector,getLocalMatrixAndBias
 
 def getWeightsAndBiases(model, layers):
     weights = []
@@ -20,6 +20,7 @@ def getRealSigns(model, layerID):
     weights, biases = getWeightsAndBiases(model, range(1, layerID + 1))
     signsLayer = np.sign(weights[-1][0])
     return signsLayer
+
 
 def getSignatures(model, layerID):
     """Simulates the signature recovery and returns the corresponding weights, biases."""

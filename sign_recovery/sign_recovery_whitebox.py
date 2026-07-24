@@ -1,12 +1,11 @@
 # ---------------------------------------------------
 # Prepare environment
 # ---------------------------------------------------
+import sys
 import os
 # Disable CUDA to avoid issues with multiprocessing
 os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
-# Restrict numpy to occupy only 1 thread on the CPU (multithreads are better employed by launching the analyzes of multiple neurons in parallel)
-os.environ['MKL_NUM_THREADS'] = '1'
-os.environ['OMP_NUM_THREADS'] = '1'
+
 # Prevent file locking errors
 os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"
 
@@ -15,66 +14,105 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 # Disable oneDNN custom operations (this avoid round-off errors from different computation orders)
 os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 
+def parseArguments(argv=None):
+
+    # ---------------------------------------------------
+    # Parse arguments from command line
+    # ---------------------------------------------------
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description='Run the energy sign recovery.',
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+
+    # ---- add arguments to parser
+    parser.add_argument('--model', type=str,
+                        help='The path to a keras.model (https://www.tensorflow.org/tutorials/keras/save_and_load).')
+    parser.add_argument('--layer', type=str,
+                        help='The ID of the target layers, separated by commas without spaces, e.g. "1,2,3".')
+    parser.add_argument('--neuron', type=str,
+                        help="Target neuron IDs, separated by commas and using - for ranges, e.g. '0,10,240-250'")
+    parser.add_argument('--runID', type=str,
+                        help="Custom run label (to avoid overwritting results from previous runs)")
+    parser.add_argument('--nExpMax', type=int,
+                        help="Number of points to be investigated.")
+    parser.add_argument('--analyzeWiggleSensitivity', type=str,
+                        help="If 'True' the sensitivity of the target layer output to a wiggle in the input will be analyzed")
+    parser.add_argument('--analyzeSpeed', type=str,
+                        help="If 'True' the average speed with which all future neurons in the network move will be analyzed")
+    parser.add_argument('--handlePrevLayerToggles', type=str,
+                        help="If 'True' we continue moving along the decision hyperplane if a neuron in the previous layer was toggled.")
+    parser.add_argument('--nToggles', type=int,
+                        help="Number of future-layer neurons to be toggled before concluding the experiment")
+    parser.add_argument('--nDebug', type=str,
+                        help="If 'True' the code will skip consistency checks and logging.")
+    parser.add_argument('--nExpMin', type=int,
+                        help="HARDLABEL: minimum number of dual points")
+    parser.add_argument('--choose_dx', type=str,
+                        help="HARDLABEL: 'along_decision_boundary', 'perfect_control_along_decision_boundary'")
+    parser.add_argument('--j', type=int,
+                        help="Number of concurrent jobs.")
+
+    # ---- default values
+    defaults = {'model': "cifar10_3x256_64_10_float64",
+                'layer': '1',
+                'neuron': '0',
+                'runID': None,
+                'nExpMax': 400,
+                'analyzeWiggleSensitivity': 'False',
+                'analyzeSpeed': 'False',
+                'handlePrevLayerToggles': 'True',
+                'nToggles': 1,
+                'nDebug': 'True',
+                'nExpMin': 25, 
+                'choose_dx': 'along_decision_boundary',
+                'j': 1
+                }
+
+    # ---- parse args
+    parser.set_defaults(**defaults)
+
+    if not argv: args = parser.parse_args()
+    else: args = parser.parse_args(argv)
+
+    return args
+
 # ---------------------------------------------------
-# TensorFlow
+# TensorFlow / NumPy
 # ---------------------------------------------------
+# If using multiple threads, turn off multithreading at the numpy level
+args = parseArguments(sys.argv[1:])
+if args.j != 1:
+    from multiprocessing import Pool
+    os.environ['MKL_NUM_THREADS'] = '1'
+    os.environ['OMP_NUM_THREADS'] = '1'
+    os.environ['OPENBLAS_NUM_THREADS'] = '1'
+
+import numpy as np
 import tensorflow as tf
+tf.keras.backend.set_floatx('float64')
 devices = tf.config.list_physical_devices('GPU')
 for device in devices:
     tf.config.experimental.set_memory_growth(device, True)
-
-# potentially set backend to high precision
-tf.keras.backend.set_floatx('float64')
+import tensorflow as tf
 
 # ---------------------------------------------------
 # Other imports
 # ---------------------------------------------------
-import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import time
 import logging
 import sys
 
-import blackbox
 import whitebox
-import common
+from common import ExperimentException, getLocalMatrixAndBias, parseRange, importModelParameters, getSavePath
 
 N_CID = 2 # how many of the strongest output layer classes to consider 
 
 # ---------------------------------------------------
 # Functions related to toggles and boundaries
 # ---------------------------------------------------
-def neuron_toggle_state(weights, biases, x0, with_output_classes=False):
-    """
-    Returns the toggled state of neurons at each layer.
-
-    'with_output_classes': If set to 'True', we consider the last weights to be connected to a softmax layer. 
-    A 'toggle' in the softmax layer occurs when the output class with the highest probability 
-    changes from one class (or output neuron) to another.
-    """
-    if with_output_classes: 
-        weightsReLU = weights[:-1] # the last weights are connected to a softmax layer, not ReLU
-    else: 
-        weightsReLU = weights
-
-    x = x0.copy()
-    states = []
-    for i in range(len(weightsReLU)):
-        x = x@weightsReLU[i] + biases[i]
-        states.append(x > 0)
-        x[x<0] = 0.0
-
-    if with_output_classes: 
-        x = x@weights[-1] + biases[-1] 
-        if N_CID == 1: 
-            states.append(x==np.max(x))
-        elif N_CID > 1: 
-            ids_sorted = np.argsort(x)[::-1]
-            _states = np.zeros_like(x)
-            _states[ids_sorted[:N_CID]] = 1
-            states.append(_states)
-    return states
 
 def get_classID(weights, biases, x0): 
     # get the output states
@@ -120,6 +158,37 @@ def find_point_of_boundary(weights, biases, x0, dx, infinity=1e10, eps=1e-6, wit
 
     return x1
 
+def neuron_toggle_state(weights, biases, x0, with_output_classes=False):
+    """
+    Returns the toggled state of neurons at each layer.
+
+    'with_output_classes': If set to 'True', we consider the last weights to be connected to a softmax layer. 
+    A 'toggle' in the softmax layer occurs when the output class with the highest probability 
+    changes from one class (or output neuron) to another.
+    """
+    if with_output_classes: 
+        weightsReLU = weights[:-1] # the last weights are connected to a softmax layer, not ReLU
+    else: 
+        weightsReLU = weights
+
+    x = x0.copy()
+    states = []
+    for i in range(len(weightsReLU)):
+        x = x@weightsReLU[i] + biases[i]
+        states.append(x > 0)
+        x[x<0] = 0.0
+
+    if with_output_classes: 
+        x = x@weights[-1] + biases[-1] 
+        if N_CID == 1: 
+            states.append(x==np.max(x))
+        elif N_CID > 1: 
+            ids_sorted = np.argsort(x)[::-1]
+            _states = np.zeros_like(x)
+            _states[ids_sorted[:N_CID]] = 1
+            states.append(_states)
+    return states
+
 def which_neuron_toggled(weights, biases, x0, x1, with_output_classes=False):
     """
     Change w.r.t. v9: The return value now contains the layerID of the toggled neuron
@@ -148,12 +217,12 @@ def which_neuron_toggled(weights, biases, x0, x1, with_output_classes=False):
 # Functions related to neural network outputs
 # ---------------------------------------------------
 def get_target_neuron_output_at_x(x, weights, biases, layerId, neuronId):
-    F,b = blackbox.getLocalMatrixAndBias(weights[:layerId], biases[:layerId], x) # transformations from input to layerId
+    F,b = getLocalMatrixAndBias(weights[:layerId], biases[:layerId], x) # transformations from input to layerId
     y0 = (x@F + b)[neuronId] # error value of the target neuron (should be zero but wont be exactly)
     return y0
 
 def get_target_neuron_output(x, dx, weights, biases, layerId, neuronId):
-    F,b = blackbox.getLocalMatrixAndBias(weights[:layerId], biases[:layerId], x) # transformations from input to layerId
+    F,b = getLocalMatrixAndBias(weights[:layerId], biases[:layerId], x) # transformations from input to layerId
     # y0 = (x@F + b)[neuronId] # error value of the target neuron (should be zero but wont be exactly)
     dy = (dx@F)[neuronId] # size of the wiggle produced by dx
     return dy
@@ -179,7 +248,7 @@ def get_neuron_values(x, weights, biases):
     return values
 
 def get_target_layer_output_norm_after_ReLU(x, dx, weights, biases, layerId):
-    F,b = blackbox.getLocalMatrixAndBias(weights[:layerId], biases[:layerId], x) # transformations from input to layerId
+    F,b = getLocalMatrixAndBias(weights[:layerId], biases[:layerId], x) # transformations from input to layerId
     y0 = (x@F + b) # target layer output at x
     dy = (dx@F) # size of the wiggle produced by dx
     # logger.debug(f"Number of OFF neurons: \t {np.sum([y0<=0.0])}/{len(dy)}")
@@ -187,7 +256,7 @@ def get_target_layer_output_norm_after_ReLU(x, dx, weights, biases, layerId):
     return np.linalg.norm(dy)
 
 def get_target_layer_average_entries_without_neuronId(x, dx, weights, biases, layerId, neuronId):
-    F,b = blackbox.getLocalMatrixAndBias(weights[:layerId], biases[:layerId], x) # transformations from input to layerId
+    F,b = getLocalMatrixAndBias(weights[:layerId], biases[:layerId], x) # transformations from input to layerId
     y0 = (x@F + b) # target layer output at x
     dy = (dx@F) # size of the wiggle produced by dx
     dy[y0<=0.0] = 0.0
@@ -270,13 +339,8 @@ _DX_TYPES = Literal['along_decision_boundary',
                     'along_decision_boundary_with_prop', 
                     'perfect_control_along_decision_boundary']
 
-class ExperimentException(Exception):
-    def __init__(self, message=None):
-        self.message = message
-        super().__init__(message)
-
 def get_m(x, weights, biases, use_strongest_output_port):
-    m,_ = blackbox.getLocalMatrixAndBias(weights, biases, x)
+    m,_ = getLocalMatrixAndBias(weights, biases, x)
     cID = get_classID(weights, biases, x) if use_strongest_output_port else 0
     if N_CID == 1: 
         cID = cID[0]
@@ -285,24 +349,15 @@ def get_m(x, weights, biases, use_strongest_output_port):
         return m[:,cID[0]] - m[:,cID[1]]
 
 # =========== Obtain walking direction ===========
-def get_dx(x, eps, weights, biases, layerId, neuronId, choose_dx, use_strongest_output_port, model=None):
-    n,_ = blackbox.getLocalMatrixAndBias(weights[:layerId], biases[:layerId], x)
+def get_dx(x, eps, weights, biases, layerId, neuronId, choose_dx, use_strongest_output_port):
+    n,_ = getLocalMatrixAndBias(weights[:layerId], biases[:layerId], x)
     n = n[:,neuronId]
-    # m,_ = blackbox.getLocalMatrixAndBias(weights, biases, x)
+    # m,_ = getLocalMatrixAndBias(weights, biases, x)
     m = get_m(x, weights, biases, use_strongest_output_port)
-
-    def get_Mb_of_layerId(x): 
-        weights_sig, biases_sig = whitebox.getSignatures(model, layerId)
-        M,b = blackbox.getLocalMatrixAndBias(weights_sig[:layerId], biases_sig[:layerId], x)
-        # if layerId > 1:
-        #     M,b = blackbox.getLocalMatrixAndBias(weights[:layerId], biases[:layerId], x) # transformation from input to layerId
-        # else:
-        #     M,b = np.identity(x.shape[0]), np.zeros(x.shape[0]) # special case for first hidden layer
-        return M,b
     
     def computePreimageDelta(x, dlx):
         # Propagate dlx back to the network input: 
-        M, _ = get_Mb_of_layerId(x)
+        M, _ = getLocalMatrixAndBias(weights[:layerId], biases[:layerId], x)
         return dlx@np.linalg.pinv(M)
 
     if choose_dx=='along_decision_boundary': # Project the above direction onto the decision boundary
@@ -315,7 +370,7 @@ def get_dx(x, eps, weights, biases, layerId, neuronId, choose_dx, use_strongest_
         dx = n.copy()
     elif choose_dx == 'optimal_EC24': # Optimal wiggle from EC24
         if layerId > 1:
-            Fm1,_ = blackbox.getLocalMatrixAndBias(weights[:layerId-1], biases[:layerId-1], x) # transformation from input to layerId-1
+            Fm1,_ = getLocalMatrixAndBias(weights[:layerId-1], biases[:layerId-1], x) # transformation from input to layerId-1
             invF = np.linalg.pinv(Fm1)
         else:
             Fm1,_ = np.identity(x.shape[0]), np.zeros(x.shape[0]) # special case for first hidden layer
@@ -326,7 +381,7 @@ def get_dx(x, eps, weights, biases, layerId, neuronId, choose_dx, use_strongest_
         dx = dx@invF # optimal wiggle is sig*F^-1
     elif choose_dx == 'optimal_along_decision_boundary':
         if layerId > 1:
-            Fm1,bm1 = blackbox.getLocalMatrixAndBias(weights[:layerId-1], biases[:layerId-1], x) # transformation from input to layerId-1
+            Fm1,bm1 = getLocalMatrixAndBias(weights[:layerId-1], biases[:layerId-1], x) # transformation from input to layerId-1
             y = x@Fm1 + bm1
             Fm1[:, np.where(y <= 0)] = 0
             invF = np.linalg.pinv(Fm1)
@@ -361,7 +416,6 @@ def analyze_x_dual(x_dual, weights, biases, layerId, neuronId,
                 handle_previous_layer_toggles = True,
                 collect_n = 1,
                 choose_dx: _DX_TYPES = 'along_decision_boundary_with_prop',
-                model = None, 
                 ndebug = False,):
 
     INFINITY = 1e10
@@ -377,7 +431,7 @@ def analyze_x_dual(x_dual, weights, biases, layerId, neuronId,
 
     # =========== NORMAL VECTOR OF RELU HYPERPLANE ===========
     # transformations from input to layerId
-    F,_ = blackbox.getLocalMatrixAndBias(weights[:layerId], biases[:layerId], x_dual)
+    F,_ = getLocalMatrixAndBias(weights[:layerId], biases[:layerId], x_dual)
     n = F[:,neuronId].copy()
     n = n / np.linalg.norm(n)
 
@@ -402,7 +456,7 @@ def analyze_x_dual(x_dual, weights, biases, layerId, neuronId,
                                 Observed neuron value {targetOut:.3E} on {side} side.""")
 
         cID = get_classID(weights, biases, xA)
-        dx = get_dx(xA, eps, weights, biases, layerId, neuronId, choose_dx, True, model=model)
+        dx = get_dx(xA, eps, weights, biases, layerId, neuronId, choose_dx, True)
         # =========== Scale dx and ensure it points in the right direction ===========
         if np.sign(np.dot(dx, n)) != side_sign: dx = -dx
         
@@ -497,12 +551,12 @@ def analyze_x_dual(x_dual, weights, biases, layerId, neuronId,
             x = xB.copy()
             dx0 = dx.copy() # take note of the original dx direction for debugging purposes
             nold = n.copy()
-            n,_ = blackbox.getLocalMatrixAndBias(weights[:layerId], biases[:layerId], x)
+            n,_ = getLocalMatrixAndBias(weights[:layerId], biases[:layerId], x)
             n = n[:,neuronId]
-            m,_ = blackbox.getLocalMatrixAndBias(weights, biases, x)
+            m,_ = getLocalMatrixAndBias(weights, biases, x)
             cID = get_classID(weights, biases, x)
             #dx = get_dx(x, weights, biases, layerId, neuronId, choose_dx)
-            dx = get_dx(x, eps, weights, biases, layerId, neuronId, choose_dx, True, model=model)
+            dx = get_dx(x, eps, weights, biases, layerId, neuronId, choose_dx, True)
             # =========== Scale dx and ensure it points in the right direction ===========
             if np.sign(np.dot(dx, n)) != side_sign: dx = -dx
             new_angle = angle_between(dx0, dx)
@@ -590,8 +644,8 @@ def analyze_df(df):
         df[f"dOFF>dON{i}"] = df[f"dOFF_patch_{i}"] > df[f"dON_patch_{i}"]
         df[f"dOFF<dON{i}"] = df[f"dOFF_patch_{i}"] < df[f"dON_patch_{i}"]
 
-    df[f"votesOFF>ON"] = df[[f"dOFF>dON{i}" for i in range(1, nT+1)]].sum(1)
-    df[f"votesOFF<ON"] = df[[f"dOFF<dON{i}" for i in range(1, nT+1)]].sum(1)
+    df[f"votesOFF>ON"] = df[[f"dOFF>dON{i}" for i in range(1, nT+1)]].sum(axis=1)
+    df[f"votesOFF<ON"] = df[[f"dOFF<dON{i}" for i in range(1, nT+1)]].sum(axis=1)
 
     #df['perc_diff'] = np.abs(df.dOFF-df.dON) / (df.dOFF + df.dON) * 100.
     #df = df[df.perc_diff > PERC_DIFF_LIM]
@@ -632,30 +686,17 @@ def analyze_df(df):
     return _results
 
 # ---------------------------------------------------
-# Main
+# Main function to recover the sign and analyze all statistics from a single neuron
 # ---------------------------------------------------
-def main(argv):
+def recoverSign(weights, biases, duals, layerId, neuronId, nExpMin, nExpMax, savePath, eps=1e-6, tol=1e-6, analyze_wiggle_sensitivity=False, analyze_speed=False, handle_previous_layer_toggles=False, nToggles=True, choose_dx=None, ndebug=True, verbose=True):
 
     t0 = time.time() # start timer
-
-    args = common.parseArguments(argv)
-
-    print(f"Parsed arguments for sign recovery: \n\t {args}.")
-
-    model = tf.keras.models.load_model(args.model)
-
-    # ---------------------------------------------------
-    # Setup File Paths
-    # ---------------------------------------------------
-    modelname = args.model.split('/')[-1].replace('.keras', '')
-    savePath = common.getSavePath(modelname, args.layerID, args.neuronID)
 
     # ---------------------------------------------------
     # Prepare logging
     # ---------------------------------------------------
     import logging
-    import sys
-    if not eval(args.nDebug) :
+    if not ndebug:
         logname = savePath + 'log.log'
         print(f"Log information will be saved to {logname}.")
         logging.basicConfig(filename=logname, #stream=sys.stdout, #
@@ -667,80 +708,42 @@ def main(argv):
         logger = logging.getLogger()
         logger.setLevel(logging.DEBUG)
 
-    print(args)
-
-    # ---------------------------------------------------
-    # Load model, weights and biases (whitebox)
-    # ---------------------------------------------------
-    model = tf.keras.models.load_model(args.model)
-    neuronId = int(args.neuronID)
-    layerId = int(args.layerID)
-
-    # Whitebox:
-    weights, biases = whitebox.getWeightsAndBiases(model, range(1, len(model.layers)))
 
     # ---------------------------------------------------
     # Check that we can attack the desired layer
     # ---------------------------------------------------
-    if args.layerID > len(weights):
-        raise Exception(f"The provided target layer ID {args.layerID} exceeds the length of weights ({len(weights)}) in the model ")
-    if args.layerID == 0:
-        raise Exception(f"Only hidden layers can be attacked, not the input layer (layerID={args.layerID}). Please pass a layerID>0.")
-    if args.layerID == len(weights):
-        raise Exception(f"The output layer with layerID({args.layerID})=len(weights) cannot be attacked using this method.")
-    if args.layerID == (len(weights)-1):
-        print(f"WARNING: The penultimate layer with layerID={args.layerID} should not be attacked with this method (since all toggles have to be in future layers).")
+    if layerId > len(weights):
+        raise Exception(f"The provided target layer ID {layerId} exceeds the length of weights ({len(weights)}) in the model ")
+    if layerId == 0:
+        raise Exception(f"Only hidden layers can be attacked, not the input layer (layerID={layerId}). Please pass a layerID>0.")
+    if layerId == len(weights):
+        raise Exception(f"The output layer with layerID({layerId})=len(weights) cannot be attacked using this method.")
+    if layerId == (len(weights)-1):
+        print(f"WARNING: The penultimate layer with layerID={layerId} should not be attacked with this method (since all toggles have to be in future layers).")
 
-    if not eval(args.nDebug) : logger.debug(f"Check that model weights are dtype tf.float64: \t {model.weights[0].dtype}")
+    if not ndebug: logger.debug(f"Check that model weights are dtype tf.float64: \t {weights[0].dtype}")
 
     # ---------------------------------------------------
     # Set parameters
     # ---------------------------------------------------
-    eps= 1e-6
-    tol= 1e-6
-    analyze_wiggle_sensitivity = eval(args.analyzeWiggleSensitivity)
-    analyze_speed = eval(args.analyzeSpeed)
-    handle_previous_layer_toggles = eval(args.handlePrevLayerToggles)
-    ndebug = eval(args.nDebug)
 
     if not ndebug:
         logger.info(f"eps: {eps}")
         logger.info(f"tol: {tol}")
-        logger.info(f"explore_dual_space: {args.exploreDualSpace}")
 
     # ---------------------------------------------------
     # Main Part
     # ---------------------------------------------------
     nExp = 0
     fail = 0
-    nExpMin = args.nExpMin
     logp = 0
     results = []
 
-    # Initial call to print 0% progress
-    printProgressBar(0, args.nExp, prefix = 'Progress:', suffix = 'Complete', length = 50)
-
-    # Load dual points from file: 
-    dual_point_id = 0
-    if not ndebug: logger.debug(f"Load dual points from file: {args.filepath_load_x0}.")
-    try:
-        X_DUAL = np.load(args.filepath_load_x0)
-    except:
-        print(f"Error: could not find precomputed dual points at {args.filepath_load_x0}. Generate or download them (see README).")
-    def get_dual_point(dual_point_id): 
-        if dual_point_id < len(X_DUAL):
-            x_dual = X_DUAL[dual_point_id]
-        else: 
-            x_dual = None
-        dual_point_id += 1
-        return x_dual, dual_point_id
-
-
-    while nExp < args.nExp:
-
-        x_dual, dual_point_id = get_dual_point(dual_point_id)
+    printProgressBar(0, nExpMax, prefix = 'Progress:', suffix = 'Complete', length = 50)
+    nExp = 0
+    for dual_point_id,x_dual in enumerate(duals, start=1):
         if x_dual is None: 
-            print(f"WARNING: Could not complete {args.nExp} experiments; got only {nExp} experiments with the amount of dual points provided.")
+            print(f"WARNING: Could not complete {nExpMax} experiments; got only {nExp} experiments with the amount of dual points provided.")
             break 
 
         if not ndebug: logger.debug(f"\n\n=================== Experiment ID #{nExp} \t Dual Point ID: {dual_point_id} ===================")
@@ -753,9 +756,8 @@ def main(argv):
                                         analyze_speed = analyze_speed,
                                         analyze_wiggle_sensitivity = analyze_wiggle_sensitivity,
                                         handle_previous_layer_toggles = handle_previous_layer_toggles,
-                                        collect_n = args.nToggles,
-                                        choose_dx = args.choose_dx,
-                                        model = model, 
+                                        collect_n = nToggles,
+                                        choose_dx = choose_dx,
                                         ndebug = ndebug, )
             analysis['nExp'] = (nExp+1)
             analysis['dual_point_id'] = dual_point_id
@@ -768,8 +770,8 @@ def main(argv):
             df = pd.DataFrame(results)
             logp = analyze_df(df)['final_logp']
             tpassednow = time.time() - t0 # check runtime
-            if (logp < -3.6889) and (nExp >= nExpMin): # logp < -2.9957: probability of wrong guess is less than 5%
-                printProgressBar(nExp, args.nExp, prefix = 'Progress:', suffix = f"Completed early with 95% confidence! \t({int(100*fail/(nExp+fail))}% exclusions, logp={int(100*logp)/100}, Seconds passed: {tpassednow:.0f}))     \n", length = 50)
+            if (logp < -3.6889 and nExp >= nExpMin) or (nExp >= nExpMax): # logp < -2.9957: probability of wrong guess is less than 5%
+                printProgressBar(nExp, nExpMax, prefix = f"(Layer {layerId}, Neuron {neuronId})Progress:", suffix = f"Completed early with 95% confidence! \t({int(100*fail/(nExp+fail))}% exclusions, logp={int(100*logp)/100}, Seconds passed: {tpassednow:.0f}))     \n", length = 50)
                 break 
 
         except ExperimentException as ex:
@@ -777,7 +779,7 @@ def main(argv):
             if not ndebug: logger.debug(str(ex))
 
         tpassednow = time.time() - t0 # check runtime
-        printProgressBar(nExp, args.nExp, prefix = 'Progress:', suffix = f"Complete\t({int(100*fail/(nExp+fail))}% exclusions, logp={int(100*logp)/100}, Seconds passed: {tpassednow:.0f}, nExp: {nExp}, DualPointID: {dual_point_id})     ", length = 50)
+        if verbose: printProgressBar(nExp, nExpMax, prefix = f"(Layer {layerId}, Neuron {neuronId})Progress:", suffix = f"Complete\t({int(100*fail/(nExp+fail))}% exclusions, logp={int(100*logp)/100}, Seconds passed: {tpassednow:.0f}, nExp: {nExp}, DualPointID: {dual_point_id})     ", length = 50)
 
     # ---------------------------------------------------
     # Save Results
@@ -861,4 +863,34 @@ def main(argv):
     plt.savefig(savePath+'figures.png')
 
 if __name__=='__main__':
-    main(sys.argv[1:])
+
+    args = parseArguments(sys.argv[1:])
+    tf.keras.backend.set_floatx('float64')
+
+    # Load model
+    model, weights, biases, Nlayers, shape = importModelParameters(f"../data/{args.model}.keras")
+
+    # Target neurons/layers
+    try:
+        neurons = parseRange(args.neuron)
+        layers = parseRange(args.layer)
+    except:
+        print("Failed to parse neuron/layer range")
+        exit(-1)
+
+    # Wrapper for the function that recovers sign of a single neuron
+    def func(jobId):
+        if jobId // len(neurons) >= len(layers): return
+        layerId = layers[jobId // len(neurons)]
+        neuronId = neurons[jobId % len(neurons)]
+        duals = np.load(f"../data/dual_points_{args.model}/layer{layerId}_neuron{neuronId}.npy", allow_pickle=True)
+        path = getSavePath(args.model, layerId, neuronId, runID=args.runID, mkdir=True, whitebox=True)
+        recoverSign(weights, biases, duals, layerId, neuronId, args.nExpMax, args.nExpMin, path, eps=1e-6, tol=1e-6, analyze_wiggle_sensitivity=args.analyzeWiggleSensitivity, analyze_speed=args.analyzeSpeed, handle_previous_layer_toggles=args.handlePrevLayerToggles, nToggles=args.nToggles, choose_dx=args.choose_dx, ndebug=args.nDebug, verbose=jobId%args.j==(len(neurons)*len(layers))%args.j)
+
+    if args.j == 1:
+        for i in range(len(neurons)*len(layers)):
+            func(i)
+
+    else:
+        with Pool(args.j) as p:
+            p.map(func, [i for i in range(len(neurons)*len(layers))])
