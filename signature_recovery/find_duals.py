@@ -1,10 +1,10 @@
 from utils import *
 
-def is_on_decision_boundary(point, delta):
+def is_on_decision_boundary(point, delta, normal):
     if USE_GRADIENT:
         return is_on_decision_boundary_cheat(point, delta)
 
-    r = torch.randn(IDIM).cuda() * delta
+    r = normal * delta  # labels straddling the point along the boundary normal
     left = bmodel(point+r)
     right = bmodel(point-r)
 
@@ -12,16 +12,16 @@ def is_on_decision_boundary(point, delta):
 
 def is_on_decision_boundary_cheat(point, delta):
     #real = is_on_decision_boundary_real(point, delta)
-    #print(gapt(torch.tensor(point).cuda().double()))
+    #print(gapt(torch.tensor(point).to(DEVICE).double()))
     return torch.abs(gapt(torch.tensor(point))) < 1e-10
 
 
-def refine_to_decision_boundary(forward, cancheat=True):
+def refine_to_decision_boundary(forward, normal, cancheat=True):
     if USE_GRADIENT and cancheat:
         return refine_to_decision_boundary_cheat(forward)
 
     for step in [1e6, 2e6, 5e6, 1e5, 2e5, 5e5, 1e4, 2e4, 5e4, 1e3, 2e3, 5e3, 1e2]:
-        r = torch.randn(IDIM, device=forward.device)/step
+        r = normal/step  # search back to the boundary along the last normal
         if bmodel(forward+r) != bmodel(forward-r): break
     else:
         return None
@@ -29,7 +29,7 @@ def refine_to_decision_boundary(forward, cancheat=True):
     return find_decision_boundary(forward+r, forward-r)
 
 def refine_to_decision_boundary_cheat(xo, tolerance=1e-13, max_iterations=10):
-    x = torch.tensor(xo).cuda().double()
+    x = torch.tensor(xo).to(DEVICE).double()
     y = gapt(x).item()
     def estimate_derivative(x, h=1e-6):
         return (y - gapt(x - h)) / (h)
@@ -39,7 +39,7 @@ def refine_to_decision_boundary_cheat(xo, tolerance=1e-13, max_iterations=10):
         
         dy_dx = estimate_derivative(x).item()
         if dy_dx == 0:
-            return refine_to_decision_boundary_real(x)
+            return refine_to_decision_boundary(x, False)
         
         x = x - y / dy_dx
         y = gapt(x).item()
@@ -70,11 +70,11 @@ def find_dual_points():
 
         dist_to_start = np.sum((boundary - start_point)**2)**.5
         print("Distance", dist_to_start)
-        if np.abs(dist_to_start - last_dist_to_start) < 1e-4:
+        if np.abs(dist_to_start - last_dist_to_start) < 2e-3:  # stalled: folding back and forth over one ridge
             break
         last_dist_to_start = dist_to_start
 
-        if USE_GRADIENT:
+        if True:  # full (hard-label finite-difference) normal, see utils.get_normal
             try:
                 normal_dir = get_normal(boundary)
             except MathIsHard:
@@ -105,17 +105,19 @@ def find_dual_points():
         
         # 1. Get an upper bound on how far we should be moving, exp sampling
         # TODO: pull this out and then write a version that's just "on hyperplane" that just checks gap(x) > tol
-        boundaryt = torch.tensor(boundary).cuda().double()
-        step_dirt = torch.tensor(step_dir).cuda().double()
+        boundaryt = torch.tensor(boundary).to(DEVICE).double()
+        step_dirt = torch.tensor(step_dir).to(DEVICE).double()
+        normal_dirt = torch.tensor(normal_dir).to(DEVICE).double()
         for step_size in 10**np.arange(-5, 5, .1):
 
             forward = boundaryt + step_dirt * step_size
 
-            if not is_on_decision_boundary(forward, 1e-5):
+            # same tolerance as the binary search below; grows with the drift of the estimated normal
+            if not is_on_decision_boundary(forward, 1e-9 + step_size*1e-8, normal_dirt):
                 break
 
-            #new_forward = torch.tensor(refine_to_decision_boundary(forward.cpu().numpy())).cuda()
-            #step_dirt = new_forward - torch.tensor(original_boundary).cuda()
+            #new_forward = torch.tensor(refine_to_decision_boundary(forward.cpu().numpy())).to(DEVICE)
+            #step_dirt = new_forward - torch.tensor(original_boundary).to(DEVICE)
             #step_dirt /= torch.sum(step_dirt**2)**.5
             prev_step_size = step_size
         #step_dir = step_dirt.cpu().numpy()
@@ -140,7 +142,7 @@ def find_dual_points():
         upper_step = step_size
         lower_step = prev_step_size
 
-        original_boundaryt = torch.tensor(original_boundary).cuda().double()
+        original_boundaryt = torch.tensor(original_boundary).to(DEVICE).double()
         
         while np.abs(upper_step - lower_step) > 1e-8:
             #after_signature = np.sign(cheat(original_boundary + step_dir * lower_step).flatten())
@@ -153,7 +155,7 @@ def find_dual_points():
             #after_signature = np.sign(cheat(mid_point).flatten())
             #print("Mid diff", np.sum(original_signature != after_signature))
 
-            if is_on_decision_boundary(mid_point, 1e-9):
+            if is_on_decision_boundary(mid_point, 1e-9 + mid_step*1e-8, normal_dirt):
                 lower_step = mid_step
             else:
                 upper_step = mid_step
@@ -162,7 +164,8 @@ def find_dual_points():
         # 3. Compute the continuation direction
 
         middle_points.append((original_boundary + step_dir * mid_step / 2,
-                              original_boundary + step_dir * mid_step))
+                              original_boundary + step_dir * mid_step,
+                              normal_dir))  # the normal of this linear piece, kept for clustering
                               
 
         a_bit_past = original_boundaryt + step_dirt * (mid_step + 1e-4)
@@ -170,10 +173,9 @@ def find_dual_points():
         #print('diff',cheat_neuron_diff(original_boundary, a_bit_past))
 
         #print(gap(a_bit_past))
-        next_decision_boundary = refine_to_decision_boundary(a_bit_past)
+        next_decision_boundary = refine_to_decision_boundary(a_bit_past, normal_dirt)
 
         if next_decision_boundary is None:
-            exit(0)
             print("Hit end of the road")
             break
 
@@ -222,8 +224,8 @@ def main():
         remaining_crits = find_dual_points()
         remaining_crits = list(zip(remaining_crits, remaining_crits[1:]))
     
-        for (left, dual), (right, _) in remaining_crits:
-            all_points.append((left, dual, right))
+        for (left, dual, nleft), (right, _, nright) in remaining_crits:
+            all_points.append((left, dual, right, nleft, nright))
 
 
     if not os.path.exists("exp/%d"%SEED):
@@ -233,4 +235,5 @@ def main():
     
     print("Finished")
         
-main()
+if __name__ == '__main__':
+    main()

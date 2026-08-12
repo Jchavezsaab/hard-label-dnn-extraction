@@ -1,102 +1,153 @@
-# ---------------------------------------------------
-# Prepare environment
-# ---------------------------------------------------
-import sys
-import os
-# Disable CUDA to avoid issues with multiprocessing
-os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
-
-# Prevent file locking errors
-os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"
-
-# Don't show TensorFlow warning messages
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
-# Disable oneDNN custom operations (this avoid round-off errors from different computation orders)
-os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
-
-def parseArguments(argv=None):
-
-    # ---------------------------------------------------
-    # Parse arguments from command line
-    # ---------------------------------------------------
-    import argparse
-
-    parser = argparse.ArgumentParser(
-        description='Run sign recovery.',
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-
-    # ---- add arguments to parser
-    parser.add_argument('--model', type=str,
-                        help='The path to a keras.model (https://www.tensorflow.org/tutorials/keras/save_and_load).')
-    parser.add_argument('--layer', type=str,
-                        help='The ID of the target layers, separated by commas without spaces, e.g. "1,2,3".')
-    parser.add_argument('--neuron', type=str,
-                        help="Target neuron IDs, separated by commas and using - for ranges, e.g. '0,10,240-250'")
-    parser.add_argument('--runID', type=str,
-                        help="Custom run label (to avoid overwritting results from previous runs), can be any string.")
-    parser.add_argument('--Nmin', type=int,
-                        help="Minimum number of experiments to be conducted per neuron.")
-    parser.add_argument('--Nmax', type=int,
-                        help="Maximum number of experiments to be conducted per neuron.")
-    parser.add_argument('--pastRelusMax', type=int,
-                        help="Number of past-layer relus that can be crossed before aborting an experiment.")
-    parser.add_argument('--j', type=int,
-                        help="Number of concurrent jobs.")
-    parser.add_argument('--signatures', type=str,
-                        help="A .npy with the recovered [signature | bias] rows of the target layer. If omitted, the true weights stand in (VALIDATION ONLY).")
-
-    # ---- default values
-    defaults = {'model': "unitary_32_32x3_10_float64",
-                'layer': '1',
-                'neuron': '0',
-                'runID': None,
-                'signatures': None,
-                'Nmin': 20,
-                'Nmax': 1000,
-                'pastRelusMax': 0,
-                'j': 1
-                }
-
-    # ---- parse args
-    parser.set_defaults(**defaults)
-
-    if not argv: args = parser.parse_args()
-    else: args = parser.parse_args(argv)
-
-    return args
-
-import numpy as np
-import tensorflow as tf
-tf.keras.backend.set_floatx('float64')
-devices = tf.config.list_physical_devices('GPU')
-for device in devices:
-    tf.config.experimental.set_memory_growth(device, True)
-
-# ---------------------------------------------------
-# TensorFlow / NumPy
-# ---------------------------------------------------
-# If using multiple threads, turn off multithreading at the numpy level
-args = parseArguments(sys.argv[1:])
-if args.j != 1:
-    from multiprocessing import Pool
-    os.environ['MKL_NUM_THREADS'] = '1'
-    os.environ['OMP_NUM_THREADS'] = '1'
-    os.environ['OPENBLAS_NUM_THREADS'] = '1'
-
-import numpy as np
-import tensorflow as tf
-tf.keras.backend.set_floatx('float64')
-devices = tf.config.list_physical_devices('GPU')
-for device in devices:
-    tf.config.experimental.set_memory_growth(device, True)
-import tensorflow as tf
-
-# ---------------------------------------------------
-# Other imports
-# ---------------------------------------------------
-import pandas as pd
+# Sign recovery of one neuron from hard labels (the black-box sign recovery of the paper).
+#
+# recoverSign() is given the recovered layers up to and including the target layer (the target layer with the signs
+# still unknown, i.e. a guess), and the oracle.  At dual points of the target neuron it walks along the decision
+# boundary on both sides of the neuron's hyperplane until the boundary bends; if the guessed sign is right, the side
+# where the neuron is ON is the one where a bend is found (dON < dOFF).  Majority over many dual points.
+# Weights are in keras layout: weights[l] is (in, out), x @ W + b.
 import time
-from common import getLocalMatrixAndBias, ExperimentException, parseRange, importModelParameters, getSavePath
+import numpy as np
+
+
+class ExperimentException(Exception):
+    def __init__(self, message=None):
+        self.message = message
+        super().__init__(message)
+
+def getLocalMatrixAndBias(weights, biases, x0):
+    """
+    Given the weights and biases up to a certain layer, find the equivalent matrix and bias
+    around the vicinity of an input x.
+
+    Parameters
+    ----------
+    weights:
+        A list of weights for the known layers (each of them a 2D array).
+    biases:
+        A list of biases for the known layers (each of them a 1D array).
+    x0:
+        A 1D array of inputs (of dimension equal to the second dimension of weights[0])
+        OR a 2D array which consists of a vector of inputs (along the first dimension)
+
+    Returns
+    -------
+    M
+        A 2D array representing the local matrix
+        OR a 3D array representing one matrix per input (along the first dimension)
+    b
+        A 1D array representing the local bias vector
+        OR a 2D array representing one bias per input (along the first dimension)
+    """
+
+    # Special case if x0 is not vectorized
+    if len(x0.shape) < 2:
+        M, b = getLocalMatrixAndBias(weights, biases, np.array([x0]))
+        return M[0], b[0]
+
+    MM = []
+    bb = []
+    for x0i in x0:
+        M = weights[0].copy()
+        b = biases[0].copy()
+        x = np.matmul(x0i, M) + b
+        for layer_id in range(1, len(weights)):
+            M_hat = weights[layer_id].copy()
+            M_hat[x < 0] = 0
+            x = np.matmul(x, M_hat) + biases[layer_id]
+            b = np.matmul(b, M_hat) + biases[layer_id]
+            M = np.matmul(M, M_hat)
+
+        MM.append(M)
+        bb.append(b)
+
+    return np.array(MM), np.array(bb)
+
+
+def getHiddenVector(weights, biases, l, x, relu=False):
+    """
+    Computes the hidden vector resulting from applying the first l hidden layers
+    to the given input x.
+
+    Parameters
+    ----------
+    weights : array
+        List of weights corresponding to the hidden layers. The i-th element in
+        the list is a 2-dimensional array with the weights of the incoming
+        connections to the neurons in the i-th hidden layer.
+    biases : array
+        List of biases corresponding to the hidden layers. The i-th element in
+        the list is a 1-dimensional array with the biases of the neurons in the
+        i-th hidden layer.
+    l : int
+        Number of hidden layers to consider.
+    x : array
+        1-dimensional array representing an input to the DNN.
+    relu : bool, optional
+        Specifies whether to compute the hidden vector before (relu=False) or
+        after (relu=True) the ReLU in layer l.
+
+    Returns
+    -------
+    array
+        The hidden vector corresponding to x after applying the first l hidden
+        layers.
+    """
+    y = x
+    for i in range(l):
+        y = np.matmul(y, weights[i]) + biases[i]
+        if (i < (l - 1)) or relu:
+            y *= (y > 0)
+    return y
+
+
+def getLocalMatrixAndBias(weights, biases, x0):
+    """
+    Given the weights and biases up to a certain layer, find the equivalent matrix and bias
+    around the vicinity of an input x.
+
+    Parameters
+    ----------
+    weights:
+        A list of weights for the known layers (each of them a 2D array).
+    biases:
+        A list of biases for the known layers (each of them a 1D array).
+    x0:
+        A 1D array of inputs (of dimension equal to the second dimension of weights[0])
+        OR a 2D array which consists of a vector of inputs (along the first dimension)
+
+    Returns
+    -------
+    M
+        A 2D array representing the local matrix
+        OR a 3D array representing one matrix per input (along the first dimension)
+    b
+        A 1D array representing the local bias vector
+        OR a 2D array representing one bias per input (along the first dimension)
+    """
+
+    # Special case if x0 is not vectorized
+    if len(x0.shape) < 2:
+        M, b = getLocalMatrixAndBias(weights, biases, np.array([x0]))
+        return M[0], b[0]
+
+    MM = []
+    bb = []
+    for x0i in x0:
+        M = weights[0].copy()
+        b = biases[0].copy()
+        x = np.matmul(x0i, M) + b
+        for layer_id in range(1, len(weights)):
+            M_hat = weights[layer_id].copy()
+            M_hat[x < 0] = 0
+            x = np.matmul(x, M_hat) + biases[layer_id]
+            b = np.matmul(b, M_hat) + biases[layer_id]
+            M = np.matmul(M, M_hat)
+
+        MM.append(M)
+        bb.append(b)
+
+    return np.array(MM), np.array(bb)
+
 
 def toggledNeuron(weights, biases, x0, x1):
     x00 = x0.copy()
@@ -232,7 +283,7 @@ def findDualPoints(f, weights, biases, layerId, neuronId, shape, tol, inf):
         # Iterated, since for deep layers the local matrix depends on x
         for _ in range(20):
             # Prefer the piece where every previous-layer neuron is active (full control of the target layer): flip the inactive
-            # ones on, layer by layer (ALLOWED PREFIX: weights[:l], l < layerId, are the true previous layers; no queries)
+            # ones on, layer by layer (weights[:l], l < layerId, are the layers we recovered below this one; no queries)
             for l in range(1, layerId):
                 M,b = getLocalMatrixAndBias(weights[:l], biases[:l], x.flatten())
                 y = x.flatten()@M + b
@@ -397,82 +448,24 @@ def recoverSign(f, weights, biases, duals, layerId, neuronId, eps, tol, inf, Nmi
             result['nExp'] = N
             result['subpoint_time_seconds'] = time.time()-t1
             result['total_execution_time'] = time.time()-t0
-            if (logp < -3.6889 and N >= Nmin) or (N >= Nmax): # logp < -2.9957: probability of wrong guess is less than 5%
-                print(f"Stopping after {N} experiments with confidence {logp:.2f} (votes+ {votes_p}, votes- {votes_m})", file=logFile)
-                break
             result['logp'] = logp
             results.append(result)
+            if (logp < -3.6889 and N >= Nmin) or (N >= Nmax):   # exp(-3.6889): a wrong majority is less than 2.5% likely
+                print(f"Stopping after {N} experiments with confidence {logp:.2f} (votes+ {votes_p}, votes- {votes_m})", file=logFile)
+                break
         except ExperimentException as e:
             print(e, file=logFile)
             continue
     print(f"L {layerId}, N {neuronId}: Experiments {N}/{NN}, votes+ {votes_p}, votes- {votes_m}, confidence {getConfidence(votes_m, votes_p)}", file=logFile)
-    print(f"Layer {layerId} neuron {neuronId} done. Experiments {N}/{NN}, votes+ {votes_p}, votes- {votes_m}, confidence {getConfidence(votes_m, votes_p)}.")
     return results
-   
 
-if __name__ == "__main__":
 
-    args = parseArguments(sys.argv[1:])
-    tf.keras.backend.set_floatx('float64')
-
-    # Load model
-    model, weights, biases, Nlayers, shape = importModelParameters(f"../data/{args.model}.keras")
-
-    # Target neurons/layers
-    try:
-        neurons = parseRange(args.neuron)
-        layers = parseRange(args.layer)
-    except:
-        print("Failed to parse neuron/layer range")
-        exit(-1)
-
-    # Obfuscate the signs (VALIDATION ONLY: unless --signatures is given, the true target-layer weights stand in for them)
-    whitebox_weights = [w.copy() for w in weights]
-    whitebox_biases = [b.copy() for b in biases]
-    real_signs = []
-    for layer in range(Nlayers):
-        if layer+1 in layers:
-            signs = np.sign(np.random.uniform(low=-1, high=+1, size=weights[layer].shape[1]))
-            signs[[x for x in range(weights[layer].shape[1]) if x not in neurons]] = 1
-        else:
-            signs = np.ones(weights[layer].shape[1])
-        real_signs.append(signs)
-        weights[layer] *= real_signs[-1].reshape(1,-1)
-        biases[layer] *= real_signs[-1]
-
-    # Recovered [signature | bias] rows of the target layer (up to unknown signs and scales) replace its true weights
-    if args.signatures:
-        S = np.load(args.signatures)
-        weights[layers[0]-1], biases[layers[0]-1] = S[:,:-1].T.copy(), S[:,-1].copy()
-        real_signs[layers[0]-1][:] = np.nan
-
-    # Blackbox access to the model: hard-label oracle only
-    sys.path.insert(0, "../signature_recovery")
-    from oracle import label as f, query_count
-
-    # Wrapper for the function that recovers sign of a single neuron
-    def func(jobId):
-        if jobId // len(neurons) >= len(layers): return
-        layerId = layers[jobId // len(neurons)]
-        neuronId = neurons[jobId % len(neurons)]
-        obfuscated_weights = whitebox_weights[:layerId-1] + [weights[layerId-1]]
-        obfuscated_biases = whitebox_biases[:layerId-1] + [biases[layerId-1]]
-        duals = findDualPoints(f, obfuscated_weights, obfuscated_biases, layerId, neuronId, shape, 1e-14, 1e3)
-        path = getSavePath(args.model, layerId, neuronId, runID=args.runID, mkdir=True, whitebox=False)
-        queries = query_count()
-        with open(f"{path}log.log", 'w') as logFile:
-            results=recoverSign(f, obfuscated_weights, obfuscated_biases, duals, layerId, neuronId, 1e-5, 1e-14, 1e14, args.Nmin, args.Nmax, args.pastRelusMax, logFile=logFile)
-        df = pd.DataFrame(results)
-        df['queries'] = query_count() - queries
-        df['dOFF/dON'] = df.dOFF / df.dON
-        df['Vote dOFF>dON'] = df.dOFF > df.dON
-        df['Real Sign'] = real_signs[layerId-1][neuronId]
-        df.to_pickle(f'{path}df.pkl')
-
-    if args.j == 1:
-        for i in range(len(neurons)*len(layers)):
-            func(i)
-
-    else:
-        with Pool(args.j) as p:
-            p.map(func, [i for i in range(len(neurons)*len(layers))])
+def recover_neuron_sign(f, weights, biases, layerId, neuronId, Nmin=20, Nmax=1000, logFile=None):
+    """+1 if the guessed sign of neuron neuronId of layer layerId (1-based) is right, -1 if it must be flipped."""
+    shape = (weights[0].shape[0],)
+    duals = findDualPoints(f, weights, biases, layerId, neuronId, shape, 1e-14, 1e3)
+    results = recoverSign(f, weights, biases, duals, layerId, neuronId, 1e-5, 1e-14, 1e14, Nmin, Nmax, 0, logFile=logFile)
+    votes_right = sum(r['dON'] < r['dOFF'] for r in results)
+    votes_wrong = len(results) - votes_right
+    assert votes_right != votes_wrong, "neuron %d of layer %d: tie" % (neuronId, layerId)
+    return 1 if votes_right > votes_wrong else -1, results

@@ -10,9 +10,10 @@ import sys
 import scipy.linalg
 import functools
 import matplotlib.pyplot as plt
+from oracle import label  # the black box: hard labels only
 
 DEBUG = True
-USE_GRADIENT = True
+USE_GRADIENT = False  # hard-label attack: no gradients / logits anywhere
 
 LAYERS = 5
 TINY = True
@@ -26,13 +27,25 @@ else:
     DIM = 256
     SHRINK = 64
 
+DEVICE = 'cpu'  # all tensors live here; change to 'cuda' to run on a GPU
+MODEL32 = True  # the 32x32x32x10 unitary keras net is the default target
+if MODEL32:
+    IDIM = 32
+    DIM = 32
+    SHRINK = 32
+    LAYERS = 4
+
 SEED = 1 if len(sys.argv) < 3 else int(sys.argv[1])
 
-x_test = np.load("data/x_test.npy")
-if TINY:
+if MODEL32:
+    x_test = np.random.RandomState(11).normal(size=(20000, 32))
+else:
+    x_test = np.load("data/x_test.npy")
+if not MODEL32 and TINY:
     x_test = x_test.mean(1)[:, ::4, ::4]
 x_test = x_test.reshape((-1, IDIM))
-x_test = (x_test*2-1)
+if not MODEL32:
+    x_test = (x_test*2-1)
 x_test = np.array(x_test, dtype=np.float64)
 
 random.seed(SEED)
@@ -98,18 +111,57 @@ class CIFAR10Net(nn.Module):
         x = relu(self.fc4(x))
         return torch.stack(o)
     
-cheat_net_cuda = CIFAR10Net()
-if not TINY:
-    cheat_net_cuda.load_state_dict(torch.load("models/final.pth"))
-else:
-    cheat_net_cuda.load_state_dict(torch.load("models/tiny.pth"))
-cheat_net_cuda.double().cuda()
+class Unitary32Net(nn.Module):
+    """input 32 -> Dense(32)+ReLU x3 -> Dense(10); weights from the keras
+    unitary_32_32x3_10_float64 model (converted by convert_keras.py)."""
+    def __init__(self):
+        super(Unitary32Net, self).__init__()
+        self.fc1 = nn.Linear(32, 32)
+        self.fc2 = nn.Linear(32, 32)
+        self.fc3 = nn.Linear(32, 32)
+        self.fc4 = nn.Linear(32, 10)
+        self.relu = nn.ReLU()
+        self.double()
 
-cheat_net_cpu = CIFAR10Net()
-if not TINY:
-    cheat_net_cpu.load_state_dict(torch.load("models/final.pth"))
-else:
-    cheat_net_cpu.load_state_dict(torch.load("models/tiny.pth"))
+    @torch.no_grad
+    def forward(self, x):
+        relu = self.relu
+        x = x.view(-1, 32)
+        x = relu(self.fc1(x))
+        x = relu(self.fc2(x))
+        x = relu(self.fc3(x))
+        return self.fc4(x)
+
+    def forward_grad(self, x):
+        relu = self.relu
+        x = x.view(-1, 32)
+        x = relu(self.fc1(x))
+        x = relu(self.fc2(x))
+        x = relu(self.fc3(x))
+        return self.fc4(x)
+
+    @torch.no_grad
+    def cheat(self, x):
+        o = []
+        def relu(x):
+            o.append(x)
+            return self.relu(x)
+        x = x.view(-1, 32)
+        x = relu(self.fc1(x))
+        x = relu(self.fc2(x))
+        x = relu(self.fc3(x))
+        return torch.stack(o)
+
+NetClass = Unitary32Net if MODEL32 else CIFAR10Net
+MODEL_PATH = ("models/unitary32.pth" if MODEL32 else
+              ("models/tiny.pth" if TINY else "models/final.pth"))
+
+cheat_net_cuda = NetClass()
+cheat_net_cuda.load_state_dict(torch.load(MODEL_PATH))
+cheat_net_cuda.double().to(DEVICE)
+
+cheat_net_cpu = NetClass()
+cheat_net_cpu.load_state_dict(torch.load(MODEL_PATH))
 cheat_net_cpu.double()
 
 cheat_solution = [x.cpu().detach().numpy() for x in cheat_net_cpu.parameters()][::2]
@@ -117,10 +169,10 @@ cheat_solution = [x.cpu().detach().numpy() for x in cheat_net_cpu.parameters()][
 
 def model(x):
     assert len(x.shape) == 1
-    return (cheat_net_cpu(torch.tensor(x).double()).numpy().argmax(1)).astype(np.int32)[0]
-    
+    return np.int32(label(np.array(x)))
+
 def bmodel(x):
-    return (cheat_net_cuda(x).argmax(1)).to(torch.int32)
+    return torch.tensor(label(x.cpu().numpy())).reshape(-1).to(torch.int32)
 
 def cheat(x):
     if not DEBUG: raise
@@ -161,7 +213,7 @@ def cheat_neuron_diff(a,b):
 
 def cheat_neuron_diff_cuda(a,b):
     if not DEBUG: raise
-    ab = torch.tensor(np.stack([a,b])).double().cuda()
+    ab = torch.tensor(np.stack([a,b])).double().to(DEVICE)
     out = cheat_cuda(ab)>0
     a = out[:,0,:]
     b = out[:,1,:]
@@ -169,7 +221,7 @@ def cheat_neuron_diff_cuda(a,b):
 
 def cheat_neuron_diff_cuda_2(a,b):
     if not DEBUG: raise
-    ab = torch.tensor(np.stack([a,b])).double().cuda()
+    ab = torch.tensor(np.stack([a,b])).double().to(DEVICE)
     out = cheat_cuda(ab)>0
     a = out[:,0,:]
     b = out[:,1,:]
@@ -184,12 +236,12 @@ def find_decision_boundary(zero=None, one=None, tensor=False):
     if zero is None and one is None:
         points = {}
         while len(points) < 2:
-            if not TINY:
+            if not TINY and not MODEL32:
                 maybe = random.sample(range(len(x_test)), 10)
                 maybe = x_test[maybe]
             else:
                 maybe = np.random.normal(size=(10, IDIM))
-            maybe = torch.tensor(maybe).cuda().double()
+            maybe = torch.tensor(maybe).to(DEVICE).double()
             outs = bmodel(maybe)
             for out, point in zip(outs, maybe):
                 points[out.item()] = point
@@ -212,15 +264,15 @@ def find_decision_boundary(zero=None, one=None, tensor=False):
     return zero.cpu().numpy()
 
 def find_decision_boundary_batched(zero, one):
-    zero = torch.tensor(zero).double().cuda()
-    one = torch.tensor(one).double().cuda()
-    last = torch.tensor(1e9).cuda()
+    zero = torch.tensor(zero).double().to(DEVICE)
+    one = torch.tensor(one).double().to(DEVICE)
+    last = torch.tensor(1e9).to(DEVICE)
 
     orig_label = bmodel(zero)[0]
     
     while True:
         s = torch.sum(torch.abs(zero - one), dim=1)
-        if not torch.any((s > 1e-14) | (s < last)).item():
+        if not torch.any((s > 1e-14) & (s < last)).item():
             break
         
         last = s
@@ -298,7 +350,7 @@ def get_gradient_dir(x, cache={}, debug=False, step_size=1e-7, dimensions=None):
     return ratios
 
 def vectorized_right_boundary_search(left, orig_label, dimensions):
-    device = 'cuda'
+    device = DEVICE
     batch_size = IDIM
     
     # Initialize the batch with copies of the left boundary
@@ -373,7 +425,7 @@ def get_gradient_dir_fast(x, cache={}, debug=False, step_size=1e-7, dimensions=N
     leftright = []
 
     left = np.array(x)
-    left = torch.tensor(left, dtype=torch.float64, device='cuda')
+    left = torch.tensor(left, dtype=torch.float64, device=DEVICE)
     original = bmodel(left)
 
     left[0] += step_size
@@ -402,27 +454,48 @@ def get_gradient_dir_fast(x, cache={}, debug=False, step_size=1e-7, dimensions=N
 
     return ratios
 
-def get_normal(x, step_size=1e-6):
+def get_normal(x, step_size=1e-5, cache={}):
     if USE_GRADIENT:
         x = torch.tensor(x, requires_grad=True)
-        out = gapt(x.cuda(), grad=True)
+        out = gapt(x.to(DEVICE), grad=True)
         out[0].backward()
         real = np.random.normal(0, 1) * x.grad.cpu().numpy()
         real = norm(real)
         return real
     else:
-        try:
-            fnormal = 1/get_gradient_dir_fast(x, step_size=step_size)
-        except MathIsHard:
-            fnormal = 1/get_gradient_dir_fast(x, step_size=step_size/10)
-        fnormal = norm(fnormal)
-    
-        return fnormal
+        # Hard-label central finite differences.  Probe x +- h*e_i on every
+        # axis; the probe labels give a rough normal v (the sign pattern), and
+        # bisecting every probe back onto the boundary along v gives offsets s
+        # with n.(+-h*e_i + s*v) the same for all probes (zero if x is exactly
+        # on the boundary), i.e. n_i proportional to (s_i^- - s_i^+) and
+        # s_i^+ + s_i^- independent of i.  If it is not, another ReLU crossed
+        # the probe box: shrink h (then give up).
+        if tuple(x) in cache:
+            return cache[tuple(x)]
+        xt = torch.tensor(np.array(x)).double()
+        orig = bmodel(xt)
+        eye = torch.eye(IDIM, dtype=torch.float64)
+        for h in [step_size, step_size/10, step_size/100]:
+            probes = torch.cat([xt + h*eye, xt - h*eye])
+            flipped = bmodel(probes) != orig
+            v = normt(flipped[:IDIM].double() - flipped[IDIM:].double())
+            far = probes - IDIM**.5 * h * v[None, :] * (2*flipped.double() - 1)[:, None]
+            if torch.any((bmodel(far) == orig) != flipped):
+                continue
+            zero = torch.where(flipped[:, None], far, probes)  # label == orig
+            one = torch.where(flipped[:, None], probes, far)
+            s = (find_decision_boundary_batched(zero, one) - probes) @ v
+            off = s[:IDIM] + s[IDIM:]
+            if torch.all(torch.abs(off - off.mean()) < 1e-8 * h):
+                fnormal = norm((s[IDIM:] - s[:IDIM]).numpy())
+                cache[tuple(x)] = fnormal
+                return fnormal
+        raise MathIsHard
 
 def get_normal_t(x, step_size=1e-6):
     if USE_GRADIENT:
         x = torch.tensor(x, requires_grad=True)
-        out = gapt(x.cuda(), grad=True)
+        out = gapt(x.to(DEVICE), grad=True)
         out[0].backward()
         real = torch.tensor(np.random.normal(0, 1)) * x.grad
         real = normt(real)

@@ -1,9 +1,11 @@
-import re
-import os
-import pickle
-from utils import *
-from collections import defaultdict
-import sys
+# Turns a cluster of dual points of one neuron into that neuron's [weights, bias] (up to scale and sign), and
+# decides whether two dual points are consistent (belong to the same neuron) -- the test par_cluster uses.
+# All geometry is done at the top of the prefix: Prefix holds OUR recovered layers below the one being attacked.
+import numpy as np
+import scipy.linalg
+import torch
+import torch.nn as nn
+from utils import IDIM, DIM, DEVICE, MathIsHard, norm
 
 def intersect(left, right, nleft, nright):
     A = np.vstack((nleft, nright))
@@ -14,12 +16,6 @@ def intersect(left, right, nleft, nright):
     
     # Find the null space of A
     N = scipy.linalg.null_space(A, 1e-5)
-    #print(A.shape)
-    #U,S,V = np.linalg.svd(A)
-    #print(U.shape, S.shape, V.shape)
-    #print("V", V.shape)
-    #rank = sum(1 for x in S if abs(x) > 1e-5)
-    #N = V.T[:, rank:]
 
     
     return x0, N
@@ -51,15 +47,18 @@ def vectorized_check_closest_pair_distance(points):
         return False
 
 
-class CIFAR10NetPrefix(nn.Module):
-    def __init__(self, layers):
-        super(CIFAR10NetPrefix, self).__init__()
-        if layers == 0:
-            self.fcs = nn.Sequential()
-        else:
-            h = [DIM, DIM] if MODEL32 else [DIM, DIM, 64]
-            layers = [nn.Linear(DIM, h[layer]) for layer in range(layers-1)]
-            self.fcs = nn.Sequential(*([nn.Linear(IDIM, DIM)] + layers))
+class Prefix(nn.Module):
+    """The recovered layers below the target layer, as a torch module.  files = one [row | bias] .npy per layer."""
+    def __init__(self, files):
+        super(Prefix, self).__init__()
+        linears = []
+        for f in files:
+            rb = np.load(f)
+            linear = nn.Linear(rb.shape[1] - 1, rb.shape[0])
+            linear.weight.data = torch.tensor(rb[:, :-1])
+            linear.bias.data = torch.tensor(rb[:, -1])
+            linears.append(linear)
+        self.fcs = nn.Sequential(*linears)
         self.double()
 
     def relu_around(self, x):
@@ -94,30 +93,6 @@ class CIFAR10NetPrefix(nn.Module):
             x = nn.functional.relu(x)
         return torch.stack(pre)
 
-def transfer_weights(source_model, target_model, source_prefix='', target_prefix='fcs'):
-    target_state_dict = {}
-    source_state_dict = source_model.state_dict()
-    
-    layer_count = 0
-    while True:
-        source_weight_key = f'{source_prefix}fc{layer_count+1}.weight'
-        source_bias_key = f'{source_prefix}fc{layer_count+1}.bias'
-        
-        if source_weight_key not in source_state_dict:
-            break
-        
-        target_weight_key = f'{target_prefix}.{layer_count}.weight'
-        target_bias_key = f'{target_prefix}.{layer_count}.bias'
-
-        target_state_dict[target_weight_key] = source_state_dict[source_weight_key]
-        target_state_dict[target_bias_key] = source_state_dict[source_bias_key]
-
-        layer_count += 1
-
-    target_model.load_state_dict(target_state_dict, strict=False)
-
-    return layer_count
-    
 def is_consistent_help(points, prefix, layer=0, do_return_soln=False, allow_close=False):
     samples = []
     # callers unpack (S, soln) when do_return_soln, else expect a scalar/None
@@ -128,20 +103,16 @@ def is_consistent_help(points, prefix, layer=0, do_return_soln=False, allow_clos
         return rejected
     
     if do_return_soln:
-        print("Num points", len(points))
         mid = np.stack([x[1] for x in points])
         hiddens = prefix(torch.tensor(mid).to(DEVICE)).cpu().numpy()
         hiddens = (hiddens>1e-4)
         hits = hiddens.sum(0)
         order = np.argsort(hits)
-        print("Hits", hits.shape)
 
         if np.min(hits) == 0 and layer > 0:
-            print("Hit some zero times. Mean OK", np.mean(hits!=0))
-            print(list(hits))
             return rejected
         points_subset = []
-        hits = np.zeros(([IDIM, DIM, DIM] if MODEL32 else [IDIM, DIM, DIM, DIM, 64])[layer])
+        hits = np.zeros([IDIM, DIM, DIM][layer])
         
         for coord in order:
             if hits[coord] >= 4:
@@ -157,8 +128,7 @@ def is_consistent_help(points, prefix, layer=0, do_return_soln=False, allow_clos
         right = np.array(right)
         x0 = np.array(x0)
 
-        # the flank normals the walk stored with the dual (find_duals.py), else measure them here
-        nleft, nright = normals or (get_normal(left), get_normal(right))
+        nleft, nright = normals        # the boundary normals the walk measured on either side of the dual
 
         _, N = intersect(left, right, nleft, nright)
         points = generate_points_on_subspace(x0, N, DIM*2).tolist()
@@ -179,9 +149,7 @@ def is_consistent_help(points, prefix, layer=0, do_return_soln=False, allow_clos
     # We need to share at least 3 coordinates in common to try and compare
     # If we only have two there are enough free variables for anything to happen.
     shared_coords = np.sum(np.sum(np.abs(samples[::DIM*2]) > 1e-5,0) >= 2)
-    #print('shared',shared_coords)
     if shared_coords <= 3 or pinned < samples.shape[1] - all_zero + 2:
-        print("Reject")
         return rejected
 
     mean_point = np.mean(samples, axis=0)
@@ -199,7 +167,6 @@ def is_consistent_help(points, prefix, layer=0, do_return_soln=False, allow_clos
 
     tt = torch.tensor(centered_samples).double()
     S = torch.linalg.svdvals(tt).cpu().numpy()
-    print(S)
 
     return S[len(S)-all_zero-1]
 
@@ -212,58 +179,42 @@ def is_consistent(points, prefix, layer=0, do_return_soln=False):
 
 
 def extract_weights(maybe, prefix, layer):
-    if True:
-        if True:
-            print("Size", len(maybe))
-            S, soln = is_consistent(maybe, prefix, layer, True)
+    S, soln = is_consistent(maybe, prefix, layer, True)
 
-            print('Singular values', S)
-            if S is not None and S[-2] > 1e-2 and S[-1] < 1e-4:
-                return soln
+    if S is not None and S[-2] > 1e-2 and S[-1] < 1e-4:
+        return soln
 
         
-def dosteal(LAYER, cluster):
-    prefix = CIFAR10NetPrefix(LAYER).to(DEVICE)
-    # the already-recovered layers < LAYER (ALLOWED PREFIX: the prefix net has no later layers to load into)
-    transfer_weights(cheat_net_cpu, prefix)
+def recover_layer(LAYER, clusters, prefix_files):
+    """clusters: list of lists of dual points.  Returns (weights (DIM, in), biases (DIM,)); rows not found stay zero."""
+    prefix = Prefix(prefix_files).to(DEVICE)
 
-    extracted = np.zeros((DIM, [IDIM, DIM, DIM][LAYER] if MODEL32 else DIM))
+    extracted = np.zeros((DIM, [IDIM, DIM, DIM][LAYER]))
     biases = np.zeros(DIM)   # for the sign stage: each dual point lies on its neuron's hyperplane
     nfound = 0
-    for cluster_id, maybe in sorted(cluster.items(), key=lambda x: len(x[1])):
+    # smallest clusters first; a neuron found twice (|cos| > .9) overwrites its earlier row
+    for ci, maybe in enumerate(sorted(clusters, key=len)):
         maybe = np.array(maybe)
+        if len(maybe) < 2:
+            print("cluster %d (%d duals): dropped, too small" % (ci, len(maybe)), flush=True)
+            continue
+        maybe = maybe[:1200]
+        soln = extract_weights(maybe, prefix, LAYER)
+        if soln is None:
+            print("cluster %d (%d duals): dropped, no clean single null direction" % (ci, len(maybe)), flush=True)
+            continue
+        same = [i for i in range(nfound) if abs(extracted[i] @ soln) > .9]
+        slot = same[0] if same else nfound
+        if slot >= DIM:
+            print("cluster %d (%d duals): dropped, already have %d neurons" % (ci, len(maybe), DIM), flush=True)
+            continue
+        if same:
+            print("cluster %d (%d duals): duplicate of neuron %d (|cos| %.6f), overwrites it" % (ci, len(maybe), slot, abs(extracted[slot] @ soln)), flush=True)
+        else:
+            print("cluster %d (%d duals): neuron %d" % (ci, len(maybe), slot), flush=True)
+        extracted[slot] = soln
+        # every dual of the cluster lies on the hyperplane: the bias is minus the activation there
+        biases[slot] = -np.median(prefix(torch.tensor(maybe[:, 1]).to(DEVICE)).cpu().numpy() @ soln)
+        nfound = max(nfound, slot+1)
 
-        if len(maybe) > 1:   # cluster_slow can leave a cluster empty after refine_cluster
-            print()
-            print()
-            print()
-            print("CLUSTER ID", cluster_id)
-            print("Recovering weight given", len(maybe), "dual points")
-            maybe = maybe[:1200]
-            soln = extract_weights(maybe, prefix, LAYER)
-
-            print('Extracted weight vector', soln)
-
-            # Labels cannot tell which neuron this is: rows are stored in the order found
-            # (smallest clusters first); a row found again (|cos| > .9) is overwritten
-            if soln is not None:
-
-                same = [i for i in range(nfound) if abs(extracted[i] @ soln) > .9]
-                slot = same[0] if same else nfound
-                if slot < DIM:
-                    print("Successfully extracted neuron; stored as row", slot)
-                    extracted[slot] = soln
-                    biases[slot] = -np.median(prefix(torch.tensor(maybe[:, 1]).to(DEVICE)).cpu().numpy() @ soln)
-                    nfound = max(nfound, slot+1)
-                else:
-                    print("Failed to identify recovered neuron")
-            else:
-                print("Not enough to fully extract")
-
-    np.save("exp/extracted_layer%d.npy" % LAYER, extracted)
-    np.save("exp/extracted_bias%d.npy" % LAYER, biases)
-    print("saved exp/extracted_layer%d.npy" % LAYER)
-
-if __name__ == '__main__':
-    layer = int(sys.argv[1])
-    dosteal(layer, pickle.load(open("exp/1-cluster-%d.p"%layer,"rb")))
+    return extracted, biases
