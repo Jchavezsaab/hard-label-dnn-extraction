@@ -417,7 +417,10 @@ def run_jobs(jobs, procs):
     if procs <= 1:
         return [refine_neuron(job) for job in jobs]
     import multiprocessing as mp
-    context = mp.get_context("fork")
+    if sys.platform == "win32":
+        context = mp.get_context("spawn")
+    else:
+        context = mp.get_context("fork")
     with context.Pool(min(procs, len(jobs))) as pool:
         return pool.map(refine_neuron, jobs, chunksize=1)
 

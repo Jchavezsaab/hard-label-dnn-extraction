@@ -55,8 +55,12 @@ def prefix_files(L):
 
 def parallel(function, jobs):
     """function(job) in WORKERS forked processes; function must return (result, queries it made)."""
-    with multiprocessing.get_context("fork").Pool(min(WORKERS, len(jobs))) as pool:
-        outputs = pool.map(function, jobs, chunksize=1)
+    if sys.platform == "win32":
+        with multiprocessing.get_context("spawn").Pool(min(WORKERS, len(jobs))) as pool:
+            outputs = pool.map(function, jobs, chunksize=1)
+    else:
+        with multiprocessing.get_context("fork").Pool(min(WORKERS, len(jobs))) as pool:
+            outputs = pool.map(function, jobs, chunksize=1)
     results = [result for result, _ in outputs]
     queries = sum(q for _, q in outputs)
     return results, queries
