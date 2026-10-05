@@ -478,7 +478,7 @@ def refine_layer(rows, prefix, K=64, procs=8, seed=0, radii=(1.0, 2.0, 4.0), e=1
 
 
 USAGE = """refine.py LAYER TARGET.npy [--prefix P0.npy ..] [--out OUT.npy] [--kinks 64] [--procs 8] [--passes 1] [--seed 0]
-          [--radius 1,2,4] [--station 1e-3] [--neurons 0,1,..]"""
+          [--radius 1,2,4] [--station 1e-3] [--neurons 0,1,..] [--model MODEL.keras]"""
 
 
 def option(argv, key, default=None):
@@ -512,6 +512,9 @@ def main(argv):
     if len(argv) < 2:
         print(USAGE)
         return 2
+    if "--model" in argv:
+        import oracle
+        oracle.set_model(option(argv, "--model"))
     layer = int(argv[0])
     target = os.path.abspath(argv[1])
     files = prefix_files(argv)

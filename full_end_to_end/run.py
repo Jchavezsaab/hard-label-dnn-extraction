@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-# Steals the network data/unitary_32_32x3_10_float64.keras from hard labels, then checks the result against the truth.
+# Steals a ReLU network (a .keras file of Dense layers, by default data/unitary_32_32x3_10_float64.keras) from hard
+# labels, then checks the result against the truth.
 # The attack only ever talks to oracle.label(); each layer is recovered behind the layers we recovered before it.
 #
 #   1. walk                  find_duals       points where the decision boundary bends, i.e. some neuron is zero -> out/duals/
@@ -10,8 +11,12 @@
 #   3. head                  recover_head     the final linear layer                                               -> out/net.npz
 #   4. validate              validate.py      compare with the true weights and with the oracle's labels (this reads the truth)
 #
-# Usage: run.py [WORKERS]
+# The attack knows the target's architecture (input dimension, hidden widths, number of classes; oracle.architecture())
+# but none of its weights.  Outputs go to out/<model name>/ unless --out says otherwise.
+#
+# Usage: run.py [WORKERS] [--model MODEL.keras] [--out OUT_DIR]
 
+import argparse
 import json
 import multiprocessing
 import os
@@ -24,21 +29,35 @@ import time
 import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-OUT = os.path.join(HERE, "out")
-WORKERS = int(sys.argv[1]) if len(sys.argv) > 1 else 32
+sys.path.insert(0, HERE)
+import oracle  # noqa: E402
+
+# Parsed at import: worker processes started with "spawn" re-import this file with the same argv.
+_parser = argparse.ArgumentParser(description="Steal a ReLU network from hard labels.")
+_parser.add_argument("workers", nargs="?", type=int, default=32, help="worker processes (default 32)")
+_parser.add_argument("--model", default=oracle.model_path(), help="the target .keras file (default %(default)s)")
+_parser.add_argument("--out", help="output directory (default out/<model name>)")
+ARGS = _parser.parse_args()
+
+MODEL = os.path.abspath(ARGS.model)
+oracle.set_model(MODEL)                 # before any worker starts: they inherit it through the environment
+OUT = os.path.abspath(ARGS.out or os.path.join(HERE, "out", os.path.splitext(os.path.basename(MODEL))[0]))
+WORKERS = ARGS.workers
+
+ARCHITECTURE = oracle.architecture()
+WIDTHS = ARCHITECTURE["widths"]         # neurons in each hidden layer
+HIDDEN_LAYERS = len(WIDTHS)
+CLASSES = ARCHITECTURE["classes"]
 
 WALKS = 8
 WALK_PATHS = 45
-HIDDEN_LAYERS = 3
-WIDTH = 32
 KINKS = 64
 VOTES_MIN, VOTES_MAX = 20, 1000
 HEAD_SEGMENTS, HEAD_HALVINGS = 2000, 50
 
 for var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
     os.environ[var] = "1"           # parallelism comes from WORKERS processes, each single-threaded
-sys.path.insert(0, HERE)
-from oracle import query_count, label
+from oracle import query_count, label  # noqa: E402
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -136,16 +155,16 @@ def solve(L, duals_dir):
         return np.load(rows_file)
 
     started = step("layer %d: cluster" % L)
-    clusters = par_cluster.cluster_layer(L, duals_dir, prefix_files(L), WORKERS, WIDTH)
+    clusters = par_cluster.cluster_layer(L, duals_dir, prefix_files(L), WORKERS, WIDTHS[L])
     record("layer%d/cluster" % L, started, 0, clusters=len(clusters))         # the duals carry their normals: no queries needed
 
     started = step("layer %d: solve" % L)
-    weights, biases = recover_weights.recover_layer(L, [c["cluster"] for c in clusters], prefix_files(L))
+    weights, biases = recover_weights.recover_layer(L, [c["cluster"] for c in clusters], prefix_files(L), WIDTHS[L])
     found = int((np.abs(weights).sum(axis=1) > 0).sum())
-    assert found == WIDTH, "layer %d: only %d of %d neurons found; walk more" % (L, found, WIDTH)
+    assert found == WIDTHS[L], "layer %d: only %d of %d neurons found; walk more" % (L, found, WIDTHS[L])
     rows = np.concatenate([weights, biases[:, None]], axis=1)
     np.save(rows_file, rows)
-    # clusters beyond WIDTH were merged into an existing neuron or dropped by recover_layer (see its printout)
+    # clusters beyond the layer's width were merged into an existing neuron or dropped by recover_layer (see its printout)
     record("layer%d/solve" % L, started, 0, clusters=len(clusters), neurons=found, dropped_or_merged=len(clusters) - found)
     return rows
 
@@ -188,7 +207,7 @@ def recover_signs(L, refined):
         return
     started = step("layer %d: signs" % L)
     os.makedirs(os.path.join(OUT, "logs"), exist_ok=True)
-    row_signs, queries = parallel(one_neuron_sign, [(L, j, refined) for j in range(WIDTH)])
+    row_signs, queries = parallel(one_neuron_sign, [(L, j, refined) for j in range(WIDTHS[L])])
     np.save(layer_file(L), refined * np.array(row_signs)[:, None])
     record("layer%d/signs" % L, started, queries)
 
@@ -210,15 +229,37 @@ def head():
         return
     started = step("head")
     layers = [np.load(f) for f in prefix_files(HIDDEN_LAYERS)]
-    R, info, _ = recover_head.recover(layers, label, query_count, HEAD_SEGMENTS, HEAD_HALVINGS)
+    # More unknowns (wider top layer, more classes) need more boundary points: double them until the head is pinned down.
+    queries = 0
+    for segments in HEAD_SEGMENTS * 2 ** np.arange(4):
+        R, info, _ = recover_head.recover(layers, label, query_count, CLASSES, int(segments), HEAD_HALVINGS)
+        queries += info["queries"]
+        if info["self_check"]:
+            break
+        print("   %d segments did not pin down a single head; doubling" % segments, flush=True)
     assert info["self_check"], "head: the boundary points did not pin down a single head: %s" % info
-    np.savez(net_file, L0=layers[0], L1=layers[1], L2=layers[2], R=R)
-    record("head", started, info["queries"])
+    np.savez(net_file, R=R, **{"L%d" % L: layer for L, layer in enumerate(layers)})
+    record("head", started, queries, segments=int(segments))
 
 
 # ----------------------------------------------------------------------------------------------------------------------
-def main():
+def check_out_dir():
+    """OUT caches every step; refuse to mix in the results of another model."""
     os.makedirs(OUT, exist_ok=True)
+    path = os.path.join(OUT, "model.json")
+    this = dict(model=MODEL, architecture=ARCHITECTURE)
+    if os.path.exists(path):
+        previous = json.load(open(path))
+        assert previous == this, "%s holds the results of %s; pass another --out" % (OUT, previous["model"])
+    else:
+        json.dump(this, open(path, "w"), indent=1)
+
+
+def main():
+    assert all(kind == "relu" for kind in ARCHITECTURE["activations"]),         "the attack targets ReLU networks; %s has hidden activations %s" % (MODEL, ARCHITECTURE["activations"])
+    print("== target %s: %d inputs, hidden widths %s, %d classes -> %s" % (
+        MODEL, ARCHITECTURE["input_dim"], WIDTHS, CLASSES, OUT), flush=True)
+    check_out_dir()
     duals_dir = walk()
     for L in range(HIDDEN_LAYERS):
         hidden_layer(L, duals_dir)
@@ -229,7 +270,7 @@ def main():
     print("== done: {:,} oracle queries; the network is in {}".format(total, os.path.join(OUT, "net.npz")), flush=True)
 
     print("== validation (this part reads the true weights)", flush=True)
-    return subprocess.call([sys.executable, os.path.join(HERE, "validate.py"), OUT])
+    return subprocess.call([sys.executable, os.path.join(HERE, "validate.py"), OUT, MODEL])
 
 
 if __name__ == "__main__":

@@ -3,10 +3,10 @@
 #
 # Compares out/net.npz with the truth.  A stolen ReLU network can only match the truth up to (a) the order of the
 # neurons in each hidden layer, (b) a positive scale per neuron, and (c) for the head, a common vector added to all
-# ten rows plus one global positive scale (neither changes any argmax).  So every layer is matched to the truth up to
+# class rows plus one global positive scale (neither changes any argmax).  So every layer is matched to the truth up to
 # exactly those freedoms, and finally the labels of the stolen and the true network are compared directly.
 #
-# Usage: validate.py OUT_DIR
+# Usage: validate.py OUT_DIR [MODEL.keras]   (the model defaults to $ORACLE_MODEL, see oracle.py)
 import os
 import sys
 
@@ -16,7 +16,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import oracle  # noqa: E402
 from oracle import label  # noqa: E402
-from recover_head import forward_logits, canonical  # noqa: E402
+from recover_head import forward_logits, canonical, net_layers  # noqa: E402
 
 RANDOM_INPUTS = 100000
 BOUNDARY_SEGMENTS = 2000
@@ -24,7 +24,7 @@ BOUNDARY_OFFSETS = (1e-3, 1e-6, 1e-9)
 
 
 def true_layers():
-    """[W | b] with one row per neuron, for the four Dense layers.  (Validation is the only place this is allowed.)"""
+    """[W | b] with one row per neuron, for every Dense layer.  (Validation is the only place this is allowed.)"""
     return [np.concatenate([W.T, b[:, None]], axis=1) for W, b in oracle._load_weights()]
 
 
@@ -51,10 +51,10 @@ def truth_in_our_coordinates(true_layer, which, scales):
     return np.concatenate([W, true_layer[:, -1:]], axis=1)
 
 
-def boundary_points(rng):
+def boundary_points(rng, input_dim):
     """Points bisected onto the true decision boundary, and a unit vector across it at each of them."""
-    a = rng.standard_normal((BOUNDARY_SEGMENTS, 32))
-    b = rng.standard_normal((BOUNDARY_SEGMENTS, 32))
+    a = rng.standard_normal((BOUNDARY_SEGMENTS, input_dim))
+    b = rng.standard_normal((BOUNDARY_SEGMENTS, input_dim))
     keep = label(a) != label(b)
     lo, hi = a[keep], b[keep]
     label_lo = label(lo)
@@ -70,31 +70,33 @@ def boundary_points(rng):
 
 def main(out):
     net = np.load(os.path.join(out, "net.npz"))
-    ours = [net["L0"], net["L1"], net["L2"]]
+    ours = net_layers(net)
     truth = true_layers()
+    assert len(truth) == len(ours) + 1, "out/net.npz has %d hidden layers, the model %d" % (len(ours), len(truth) - 1)
+    input_dim = ours[0].shape[1] - 1
     ok = True
 
     # hidden layers, bottom up: each one is compared in the coordinates our layer below defines
-    which, scales = np.arange(32), np.ones(32)
-    for L in range(3):
+    which, scales = None, None
+    for L in range(len(ours)):
         comparable = truth[L] if L == 0 else truth_in_our_coordinates(truth[L], which, scales)
         error, wrong_signs, which, scales = match_layer(ours[L], comparable)
         print("layer %d: worst relative error %.1e, %d wrong signs" % (L, error, wrong_signs))
         ok = ok and error < 1e-6 and wrong_signs == 0
 
     # head: compared after removing the freedoms an argmax cannot see
-    true_head = canonical(truth_in_our_coordinates(truth[3], which, scales))
+    true_head = canonical(truth_in_our_coordinates(truth[-1], which, scales))
     head_error = np.linalg.norm(net["R"] - true_head) / np.linalg.norm(true_head)
     print("head:    relative error %.1e" % head_error)
     ok = ok and head_error < 1e-6
 
     # and finally the only thing an attacker could check: do the labels agree?
     rng = np.random.default_rng(7)
-    x = rng.standard_normal((RANDOM_INPUTS, 32))
+    x = rng.standard_normal((RANDOM_INPUTS, input_dim))
     agree = int((np.argmax(forward_logits(ours, net["R"], x), axis=1) == label(x)).sum())
     print("labels:  %d / %d random inputs agree" % (agree, RANDOM_INPUTS))
     ok = ok and agree == RANDOM_INPUTS
-    points, across = boundary_points(rng)
+    points, across = boundary_points(rng, input_dim)
     for offset in BOUNDARY_OFFSETS:
         x = np.concatenate([points + offset * across, points - offset * across])
         agree = int((np.argmax(forward_logits(ours, net["R"], x), axis=1) == label(x)).sum())
@@ -106,4 +108,6 @@ def main(out):
 
 
 if __name__ == "__main__":
+    if len(sys.argv) > 2:
+        oracle.set_model(sys.argv[2])
     sys.exit(main(sys.argv[1] if len(sys.argv) > 1 else os.path.join(HERE, "out")))

@@ -3,10 +3,9 @@
 # boundary, and estimating the boundary's normal vector by finite differences of labels).
 import numpy as np
 import torch
-from oracle import label   # the black box: hard labels only
+from oracle import label, architecture   # the black box: hard labels only (and its public shape)
 
-IDIM = 32                  # input dimension of the target
-DIM = 32                   # width of its hidden layers
+IDIM = architecture()["input_dim"]   # input dimension of the target
 DEVICE = 'cpu'
 
 

@@ -1,11 +1,11 @@
-# Recovers the head (the final Dense(10)) of the extracted network from labels only, and holds the
-# numpy forward pass of the assembled network (used by validate/verify_net.py).
+# Recovers the head (the final Dense layer, one row per class) of the extracted network from labels only, and holds
+# the numpy forward pass of the assembled network (used by validate/verify_net.py).
 #
-# recover() gets OUR three hidden layers plus the oracle's label()/query_count() and reads nothing else.
+# recover() gets OUR hidden layers, the number of classes, plus the oracle's label()/query_count() and reads nothing else.
 # Method:
 #   1. label 2N random inputs, pair them, keep the pairs with different labels
 #   2. bisect each kept segment H times -> a point m on the boundary between classes (a, b), where
-#      [h3(m), 1] . (r_a - r_b) = 0 with r_k = head row k minus the row of a reference class
+#      [h(m), 1] . (r_a - r_b) = 0 with r_k = head row k minus the row of a reference class
 #      (a common vector added to every row never changes the argmax, so r_ref = 0 is a free choice)
 #   3. the head is the null vector of those equations (one SVD); self-check: exactly one null direction
 #   4. the sign of the null vector is fixed by re-predicting the 2N labelled inputs (no queries)
@@ -14,15 +14,11 @@
 import time
 import numpy as np
 
-NCLASS = 10
-DIM = 32
-
-
 # ----------------------------------------------------------------------------------------------------------------------------
 # the extracted network, as numpy
 # ----------------------------------------------------------------------------------------------------------------------------
 def forward_hidden(layers, X):
-    """Hidden activations of a stack of signed [W | b] blocks (one row per neuron): X (N, 32) -> (N, 32)."""
+    """Hidden activations of a stack of signed [W | b] blocks (one row per neuron): X (N, in) -> (N, width of the top)."""
     H = np.asarray(X, dtype=np.float64)
     for layer in layers:
         W = layer[:, :-1]
@@ -32,7 +28,7 @@ def forward_hidden(layers, X):
 
 
 def forward_logits(layers, R, X):
-    """Logits of the hidden stack `layers` followed by the head R (10, 33)."""
+    """Logits of the hidden stack `layers` followed by the head R (classes, width + 1)."""
     H = forward_hidden(layers, X)
     return H @ R[:, :-1].T + R[:, -1]
 
@@ -40,12 +36,16 @@ def forward_logits(layers, R, X):
 def load_net(path):
     """net.npz as written by pipeline.py -> (layers, R), the arguments of forward()."""
     z = np.load(path)
-    layers = [z["L0"], z["L1"], z["L2"]]
-    return layers, z["R"]
+    return net_layers(z), z["R"]
+
+
+def net_layers(z):
+    """The hidden layers L0, L1, ... of a loaded net.npz, bottom first."""
+    return [z["L%d" % L] for L in range(sum(1 for key in z.files if key.startswith("L")))]
 
 
 def forward(net, X):
-    """net = (layers, R) as returned by load_net -> logits (N, 10) in the extracted gauge (argmax-equivalent to the target's)."""
+    """net = (layers, R) as returned by load_net -> logits (N, classes) in the extracted gauge (argmax-equivalent to the target's)."""
     layers, R = net
     return forward_logits(layers, R, X)
 
@@ -63,12 +63,12 @@ def canonical(R):
 # ----------------------------------------------------------------------------------------------------------------------------
 # the attack
 # ----------------------------------------------------------------------------------------------------------------------------
-def mint_points(label, rng, n_segments, halvings):
+def mint_points(label, rng, n_segments, halvings, input_dim):
     """Steps 1 and 2 of the recipe.
 
     Returns (X, y, points, pairs, bracket_width): the 2N labelled endpoints (reused later to fix the sign), one boundary point per
     kept segment, the (y_lo, y_hi) class pair of every point, and the width of the widest final bracket."""
-    X = rng.standard_normal((2 * n_segments, DIM))
+    X = rng.standard_normal((2 * n_segments, input_dim))
     y = label(X)
     lo = X[:n_segments].copy()
     hi = X[n_segments:].copy()
@@ -96,14 +96,15 @@ def mint_points(label, rng, n_segments, halvings):
     return X, y, points, pairs, width
 
 
-def build_system(H3, pairs, ref):
-    """The N x 297 matrix Phi of step 3: row i encodes [h3_i, 1] . (r_a - r_b) with the block of class `ref` left out."""
+def build_system(H3, pairs, ref, n_classes):
+    """The N x (width + 1)(classes - 1) matrix Phi of step 3: row i encodes [h_i, 1] . (r_a - r_b) with the block of
+    class `ref` left out."""
     N = len(H3)
     feat = np.concatenate([H3, np.ones((N, 1))], axis=1)
-    others = [c for c in range(NCLASS) if c != ref]
+    others = [c for c in range(n_classes) if c != ref]
     column = {c: i for i, c in enumerate(others)}
-    W = DIM + 1
-    Phi = np.zeros((N, W * (NCLASS - 1)))
+    W = H3.shape[1] + 1
+    Phi = np.zeros((N, W * (n_classes - 1)))
     for i, (a, b) in enumerate(pairs):
         if a != ref:
             start = W * column[a]
@@ -114,26 +115,26 @@ def build_system(H3, pairs, ref):
     return Phi, others, column
 
 
-def solve_head(H3, pairs, ref=None):
+def solve_head(H3, pairs, n_classes, ref=None):
     """Step 3: the null vector of the system over all points, with r_ref = 0.
 
-    Returns R (10, 33) with row `ref` all zero, and a dict of label-free diagnostics."""
+    Returns R (classes, width + 1) with row `ref` all zero, and a dict of label-free diagnostics."""
     classes, counts = np.unique(pairs, return_counts=True)
     if ref is None:
         ref = int(classes[np.argmax(counts)])
-    Phi, others, column = build_system(H3, pairs, ref)
-    W = DIM + 1
+    Phi, others, column = build_system(H3, pairs, ref, n_classes)
+    W = H3.shape[1] + 1
 
     Phi /= np.linalg.norm(Phi, axis=1, keepdims=True)
-    observations = (Phi != 0).sum(axis=0)          # equations touching each of the 297 coefficients
+    observations = (Phi != 0).sum(axis=0)          # equations touching each coefficient
     column_norm = np.linalg.norm(Phi, axis=0)
     column_norm[column_norm == 0] = 1.0
     _, sv, Vt = np.linalg.svd(Phi / column_norm, full_matrices=True)
-    # Vt is 297 x 297 even when there are fewer than 297 equations; the missing singular values are exact zeros.
+    # Vt is square even when there are fewer equations than coefficients; the missing singular values are exact zeros.
     sv = np.concatenate([sv, np.zeros(Phi.shape[1] - len(sv))])
     u = Vt[-1] / column_norm
 
-    R = np.zeros((NCLASS, W))
+    R = np.zeros((n_classes, W))
     for c in others:
         start = W * column[c]
         R[c] = u[start:start + W]
@@ -143,7 +144,7 @@ def solve_head(H3, pairs, ref=None):
         gap = float(sv[-2] / sv[-1])
     else:
         gap = float("inf")
-    # rank_ok = exactly ONE null direction.  It is False when there are fewer than 297 equations, when a class was never
+    # rank_ok = exactly ONE null direction.  It is False when there are fewer equations than coefficients, when a class was never
     # reached, or when some (class, unit) coefficient was never observed (the unit never active at that class's points);
     # `gap` is meaningless in those cases and the stage must refuse.
     rank_ok = bool(sv[-2] / sv[0] > 1e-6)
@@ -168,14 +169,14 @@ def endpoint_agreement(layers, R, X, y):
     return float((predicted == y).mean())
 
 
-def recover(layers, label, query_count, n_segments=2000, halvings=30, seed=1):
+def recover(layers, label, query_count, n_classes, n_segments=2000, halvings=30, seed=1):
     """The whole recipe.  Returns (R in canonical gauge, info dict, (boundary points, their class pairs))."""
     t0 = time.time()
     queries_before = query_count()
     rng = np.random.default_rng(seed)
 
-    X, y, points, pairs, width = mint_points(label, rng, n_segments, halvings)
-    R, info = solve_head(forward_hidden(layers, points), pairs)
+    X, y, points, pairs, width = mint_points(label, rng, n_segments, halvings, layers[0].shape[1] - 1)
+    R, info = solve_head(forward_hidden(layers, points), pairs, n_classes)
 
     # Step 4: pick the sign under which the net reproduces the endpoint labels.
     agree_plus = endpoint_agreement(layers, R, X, y)
@@ -190,7 +191,7 @@ def recover(layers, label, query_count, n_segments=2000, halvings=30, seed=1):
         info["rank_ok"]
         and info["gap"] > 1e4
         and agreement > 0.999
-        and len(info["classes_reached"]) == NCLASS
+        and len(info["classes_reached"]) == n_classes
     )
     info.update(
         segments=n_segments,

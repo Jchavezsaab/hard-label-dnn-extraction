@@ -5,7 +5,7 @@ import numpy as np
 import scipy.linalg
 import torch
 import torch.nn as nn
-from utils import IDIM, DIM, DEVICE, MathIsHard, norm
+from utils import IDIM, DEVICE, MathIsHard, norm
 
 def intersect(left, right, nleft, nright):
     A = np.vstack((nleft, nright))
@@ -59,6 +59,7 @@ class Prefix(nn.Module):
             linear.bias.data = torch.tensor(rb[:, -1])
             linears.append(linear)
         self.fcs = nn.Sequential(*linears)
+        self.out_dim = linears[-1].out_features if linears else IDIM   # the input dimension of the target layer
         self.double()
 
     def relu_around(self, x):
@@ -112,7 +113,7 @@ def is_consistent_help(points, prefix, layer=0, do_return_soln=False, allow_clos
         if np.min(hits) == 0 and layer > 0:
             return rejected
         points_subset = []
-        hits = np.zeros([IDIM, DIM, DIM][layer])
+        hits = np.zeros(prefix.out_dim)
         
         for coord in order:
             if hits[coord] >= 4:
@@ -123,6 +124,7 @@ def is_consistent_help(points, prefix, layer=0, do_return_soln=False, allow_clos
                 
         points = points_subset
 
+    n_samples = 2 * prefix.out_dim     # points sampled on each dual's (n-2)-dimensional intersection
     for i, (left, x0, right, *normals) in enumerate(points):
         left = np.array(left)
         right = np.array(right)
@@ -131,7 +133,7 @@ def is_consistent_help(points, prefix, layer=0, do_return_soln=False, allow_clos
         nleft, nright = normals        # the boundary normals the walk measured on either side of the dual
 
         _, N = intersect(left, right, nleft, nright)
-        points = generate_points_on_subspace(x0, N, DIM*2).tolist()
+        points = generate_points_on_subspace(x0, N, n_samples).tolist()
 
         points = np.concatenate(([x0], points), 0)
         
@@ -148,7 +150,7 @@ def is_consistent_help(points, prefix, layer=0, do_return_soln=False, allow_clos
 
     # We need to share at least 3 coordinates in common to try and compare
     # If we only have two there are enough free variables for anything to happen.
-    shared_coords = np.sum(np.sum(np.abs(samples[::DIM*2]) > 1e-5,0) >= 2)
+    shared_coords = np.sum(np.sum(np.abs(samples[::n_samples]) > 1e-5,0) >= 2)
     if shared_coords <= 3 or pinned < samples.shape[1] - all_zero + 2:
         return rejected
 
@@ -185,12 +187,12 @@ def extract_weights(maybe, prefix, layer):
         return soln
 
         
-def recover_layer(LAYER, clusters, prefix_files):
-    """clusters: list of lists of dual points.  Returns (weights (DIM, in), biases (DIM,)); rows not found stay zero."""
+def recover_layer(LAYER, clusters, prefix_files, width):
+    """clusters: list of lists of dual points.  Returns (weights (width, in), biases (width,)); rows not found stay zero."""
     prefix = Prefix(prefix_files).to(DEVICE)
 
-    extracted = np.zeros((DIM, [IDIM, DIM, DIM][LAYER]))
-    biases = np.zeros(DIM)   # for the sign stage: each dual point lies on its neuron's hyperplane
+    extracted = np.zeros((width, prefix.out_dim))
+    biases = np.zeros(width)   # for the sign stage: each dual point lies on its neuron's hyperplane
     nfound = 0
     # smallest clusters first; a neuron found twice (|cos| > .9) overwrites its earlier row
     for ci, maybe in enumerate(sorted(clusters, key=len)):
@@ -205,8 +207,8 @@ def recover_layer(LAYER, clusters, prefix_files):
             continue
         same = [i for i in range(nfound) if abs(extracted[i] @ soln) > .9]
         slot = same[0] if same else nfound
-        if slot >= DIM:
-            print("cluster %d (%d duals): dropped, already have %d neurons" % (ci, len(maybe), DIM), flush=True)
+        if slot >= width:
+            print("cluster %d (%d duals): dropped, already have %d neurons" % (ci, len(maybe), width), flush=True)
             continue
         if same:
             print("cluster %d (%d duals): duplicate of neuron %d (|cos| %.6f), overwrites it" % (ci, len(maybe), slot, abs(extracted[slot] @ soln)), flush=True)

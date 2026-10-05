@@ -17,8 +17,12 @@ code from the paper directly:
 - the last layer is extracted separately as described in the paper
 
 
-python3 run.py [num workers] runs each of the steps in turn and writes
-the intermediate outputs to out/. This calls validate.py, which looks
+python3 run.py [num workers] [--model path/to/model.keras] [--out dir]
+runs each of the steps in turn and writes the intermediate outputs to
+out/<model name>/. The model is any .keras file of Dense layers with
+ReLU activations (default ../data/unitary_32_32x3_10_float64.keras);
+the attack reads its architecture (input dimension, hidden widths,
+number of classes) from the file, but never its weights. This calls validate.py, which looks
 at the true weights and compares the extracted network with the real
 one. The pipline should take a few minutes on a 32-core machine and
 needs about 40 million queries.
