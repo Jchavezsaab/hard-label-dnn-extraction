@@ -123,7 +123,7 @@ def process_single_candidate(args):
             logging.info(f"[W{worker_id}] Check consistent for {cluster_id} {S}")
             
             if type(S) == np.ndarray:
-                if S[-1] > 1e-6:
+                if S[-1] > 1e-7 * S[0]:
                     logging.info(f"[W{worker_id}] Invalid cluster")
                     break
                 
