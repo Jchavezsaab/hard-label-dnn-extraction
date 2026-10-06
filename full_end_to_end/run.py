@@ -178,11 +178,12 @@ def refine_rows(L, rows):
         return np.load(refined_file)
     started = step("layer %d: refine" % L)
     prefix = [np.load(f) for f in prefix_files(L)]
-    refined, stats = refine.refine_layer(rows, prefix, K=KINKS, procs=WORKERS)
+    kinks = max(KINKS, 2 * (rows.shape[1] - 1))
+    refined, stats = refine.refine_layer(rows, prefix, K=kinks, procs=WORKERS)
     kept_old = stats["passes"][-1]["kept_old"]
     assert not kept_old, "layer %d: rows %s could not be refined" % (L, kept_old)
     np.save(refined_file, refined)
-    record("layer%d/refine" % L, started, stats["queries"])
+    record("layer%d/refine" % L, started, stats["queries"], kinks=kinks)
     return refined
 
 
