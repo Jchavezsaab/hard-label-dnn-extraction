@@ -239,13 +239,18 @@ def two_line(x_B, nu, d, e, reach_t):
     return (s_star, t_star, abs(bend), resid), None
 
 
+def input_dim(prefix, rows):
+    """The network's input dimension: the width of the first prefix layer's rows, or of our rows when there is no prefix."""
+    return (prefix[0] if len(prefix) else rows).shape[1] - 1
+
+
 def mint_kinks(prefix, rows, j, K, rng, radii, e, max_tries):
     """Mint up to K kinks on H_j.  Returns (H = prefix activations at the kinks, their bends, stats)."""
     H = []
     bends = []
     rejected = {}
     tried = 0
-    dim = rows.shape[1] - 1
+    dim = input_dim(prefix, rows)
 
     def reject(why):
         rejected[why] = rejected.get(why, 0) + 1
@@ -451,7 +456,7 @@ def refine_layer(rows, prefix, K=64, procs=8, seed=0, radii=(1.0, 2.0, 4.0), e=1
 
     # Load the oracle once, in the parent, before the workers are forked.
     queries_before = query_count()
-    label(np.zeros(rows.shape[1] - 1))
+    label(np.zeros(input_dim(prefix, rows)))
     stats = dict(passes=[], warmup_queries=query_count() - queries_before)
 
     for p in range(passes):
