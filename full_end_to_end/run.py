@@ -4,7 +4,7 @@
 # The attack only ever talks to oracle.label(); each layer is recovered behind the layers we recovered before it.
 #
 #   1. walk                  find_duals       points where the decision boundary bends, i.e. some neuron is zero -> out/duals/
-#   2. per hidden layer L:   cluster          par_cluster      group the duals of layer L by neuron
+#   2. per hidden layer L:   cluster          par_cluster      group the duals of layer L by neuron                 -> out/layerL_clusters.p
 #                            solve            recover_weights  one [row | bias] per cluster, good to ~1e-7          -> out/layerL_rows.npy
 #                            refine           refine           re-fit every row from fresh points, good to ~1e-14  -> out/layerL_refined.npy
 #                            signs            signs            which side of each row is the ReLU's positive side  -> out/layerL.npy
@@ -154,9 +154,16 @@ def solve(L, duals_dir):
     if os.path.exists(rows_file):
         return np.load(rows_file)
 
-    started = step("layer %d: cluster" % L)
-    clusters = par_cluster.cluster_layer(L, duals_dir, prefix_files(L), WORKERS, WIDTHS[L])
-    record("layer%d/cluster" % L, started, 0, clusters=len(clusters))         # the duals carry their normals: no queries needed
+    clusters_file = os.path.join(OUT, "layer%d_clusters.p" % L)
+    if os.path.exists(clusters_file):
+        clusters = pickle.load(open(clusters_file, "rb"))
+        print("== layer %d: cluster (%d clusters from %s)" % (L, len(clusters), clusters_file), flush=True)
+    else:
+        started = step("layer %d: cluster" % L)
+        clusters = par_cluster.cluster_layer(L, duals_dir, prefix_files(L), WORKERS, WIDTHS[L])
+        pickle.dump(clusters, open(clusters_file + ".partial", "wb"))
+        os.replace(clusters_file + ".partial", clusters_file)
+        record("layer%d/cluster" % L, started, 0, clusters=len(clusters))     # the duals carry their normals: no queries needed
 
     started = step("layer %d: solve" % L)
     weights, biases = recover_weights.recover_layer(L, [c["cluster"] for c in clusters], prefix_files(L), WIDTHS[L])
