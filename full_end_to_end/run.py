@@ -49,7 +49,7 @@ WIDTHS = ARCHITECTURE["widths"]         # neurons in each hidden layer
 HIDDEN_LAYERS = len(WIDTHS)
 CLASSES = ARCHITECTURE["classes"]
 
-WALKS = 8
+WALKS = 32                              # neurons that are almost always on get few duals: walk enough to cluster them
 WALK_PATHS = 45
 KINKS = 64
 VOTES_MIN, VOTES_MAX = 20, 1000
