@@ -91,7 +91,11 @@ def step(name):
 
 
 def record(name, started, queries, **extra):
-    """Append a step's query count and wall time to out/stats.json."""
+    """Append a step's query count and wall time to out/stats.json.
+
+    The total reported at the end is the sum over this file, so a step restored from its output files is counted through
+    the entry it wrote when it ran.  Every step calls this BEFORE writing its output, so no output exists without its
+    entry (a crash in between only means the step runs again and its entry is overwritten)."""
     stats = dict(queries=queries, seconds=round(time.time() - started), **extra)
     print("   %s: %s" % (name, "  ".join("%s=%s" % item for item in sorted(stats.items()))), flush=True)
     path = os.path.join(OUT, "stats.json")
@@ -137,8 +141,8 @@ def walk():
     os.makedirs(partial, exist_ok=True)
     for seed, duals in enumerate(per_walk, start=1):
         pickle.dump(duals, open(os.path.join(partial, "walk%d.p" % seed), "wb"))
-    os.rename(partial, duals_dir)
     record("walk", started, queries, duals=sum(len(d) for d in per_walk))
+    os.rename(partial, duals_dir)
     return duals_dir
 
 
@@ -162,17 +166,17 @@ def solve(L, duals_dir):
         started = step("layer %d: cluster" % L)
         clusters = par_cluster.cluster_layer(L, duals_dir, prefix_files(L), WORKERS, WIDTHS[L])
         pickle.dump(clusters, open(clusters_file + ".partial", "wb"))
-        os.replace(clusters_file + ".partial", clusters_file)
         record("layer%d/cluster" % L, started, 0, clusters=len(clusters))     # the duals carry their normals: no queries needed
+        os.replace(clusters_file + ".partial", clusters_file)
 
     started = step("layer %d: solve" % L)
     weights, biases = recover_weights.recover_layer(L, [c["cluster"] for c in clusters], prefix_files(L), WIDTHS[L])
     found = int((np.abs(weights).sum(axis=1) > 0).sum())
     assert found == WIDTHS[L], "layer %d: only %d of %d neurons found; walk more" % (L, found, WIDTHS[L])
     rows = np.concatenate([weights, biases[:, None]], axis=1)
-    np.save(rows_file, rows)
     # clusters beyond the layer's width were merged into an existing neuron or dropped by recover_layer (see its printout)
     record("layer%d/solve" % L, started, 0, clusters=len(clusters), neurons=found, dropped_or_merged=len(clusters) - found)
+    np.save(rows_file, rows)
     return rows
 
 
@@ -189,8 +193,8 @@ def refine_rows(L, rows):
     refined, stats = refine.refine_layer(rows, prefix, K=kinks, procs=WORKERS)
     kept_old = stats["passes"][-1]["kept_old"]
     assert not kept_old, "layer %d: rows %s could not be refined" % (L, kept_old)
-    np.save(refined_file, refined)
     record("layer%d/refine" % L, started, stats["queries"], kinks=kinks)
+    np.save(refined_file, refined)
     return refined
 
 
@@ -216,14 +220,29 @@ def recover_signs(L, refined):
     started = step("layer %d: signs" % L)
     os.makedirs(os.path.join(OUT, "logs"), exist_ok=True)
     row_signs, queries = parallel(one_neuron_sign, [(L, j, refined) for j in range(WIDTHS[L])])
-    np.save(layer_file(L), refined * np.array(row_signs)[:, None])
     record("layer%d/signs" % L, started, queries)
+    np.save(layer_file(L), refined * np.array(row_signs)[:, None])
+
+
+def report_error(L, stage, rows):
+    """Diagnostics only: compare rows of layer L with the true weights (validate.py reads them; no oracle queries, and
+    nothing here feeds back into the attack)."""
+    import validate
+
+    prefix = [np.load(f) for f in prefix_files(L)]
+    relative, absolute, wrong_signs = validate.layer_error(L, rows, prefix)
+    signs = ", %d wrong signs" % wrong_signs if stage == "signs" else ""
+    print("   layer %d after %s vs. truth: max relative row error %.1e, max parameter error %.1e%s"
+          % (L, stage, relative, absolute, signs), flush=True)
 
 
 def hidden_layer(L, duals_dir):
     rows = solve(L, duals_dir)
+    report_error(L, "solve", rows)
     refined = refine_rows(L, unit_rows(rows))
+    report_error(L, "refine", refined)
     recover_signs(L, refined)
+    report_error(L, "signs", np.load(layer_file(L)))
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -246,8 +265,8 @@ def head():
             break
         print("   %d segments did not pin down a single head; doubling" % segments, flush=True)
     assert info["self_check"], "head: the boundary points did not pin down a single head: %s" % info
-    np.savez(net_file, R=R, **{"L%d" % L: layer for L, layer in enumerate(layers)})
     record("head", started, queries, segments=int(segments))
+    np.savez(net_file, R=R, **{"L%d" % L: layer for L, layer in enumerate(layers)})
 
 
 # ----------------------------------------------------------------------------------------------------------------------

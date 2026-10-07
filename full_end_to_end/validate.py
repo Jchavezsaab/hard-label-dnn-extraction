@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-# VALIDATION ONLY -- this is the one file that reads the true weights.  run.py calls it after the attack is finished.
+# VALIDATION ONLY -- this is the one file that reads the true weights.  run.py calls it after the attack is finished,
+# and calls layer_error() after every stage of every hidden layer to print the error so far (diagnostics, not used by
+# the attack).
 #
 # Compares out/net.npz with the truth.  A stolen ReLU network can only match the truth up to (a) the order of the
 # neurons in each hidden layer, (b) a positive scale per neuron, and (c) for the head, a common vector added to all
@@ -49,6 +51,24 @@ def truth_in_our_coordinates(true_layer, which, scales):
     """Rewrite a true layer's input columns in our coordinates: our unit i is true unit which[i] times scales[i]."""
     W = true_layer[:, :-1][:, which] / scales[None, :]
     return np.concatenate([W, true_layer[:, -1:]], axis=1)
+
+
+def layer_error(L, ours, prefix):
+    """How far our rows of hidden layer L are from the truth, given our finished layers below it (`prefix`).
+
+    Every row is matched to its true neuron and rescaled to it (sign included, so rows whose sign is still unknown are
+    compared fairly); for L > 0 the truth is expressed in our coordinates of the layer below, as in main.  Returns (largest
+    relative row error, largest absolute parameter error, rows whose sign is wrong)."""
+    truth = true_layers()
+    which = scales = None
+    for k, layer in enumerate(prefix):
+        comparable = truth[k] if k == 0 else truth_in_our_coordinates(truth[k], which, scales)
+        _, _, which, scales = match_layer(layer, comparable)
+    comparable = truth[L] if L == 0 else truth_in_our_coordinates(truth[L], which, scales)
+    error, wrong_signs, which, _ = match_layer(ours, comparable)
+    matched = comparable[which]
+    scale = np.linalg.norm(ours, axis=1) / np.linalg.norm(matched, axis=1) * np.sign((ours * matched).sum(axis=1))
+    return error, float(np.abs(ours / scale[:, None] - matched).max()), wrong_signs
 
 
 def boundary_points(rng, input_dim):
