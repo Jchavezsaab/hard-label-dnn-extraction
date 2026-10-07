@@ -9,6 +9,10 @@ import time
 import numpy as np
 
 
+CONFIDENT = -3.6889       # log of the chance that the majority is wrong at which the vote stops: exp(-3.6889) = 2.5%
+DUAL_FAILURES_MAX = 1000  # dual-point attempts in a row that may fail before findDualPoints gives up
+
+
 class ExperimentException(Exception):
     def __init__(self, message=None):
         self.message = message
@@ -273,11 +277,12 @@ def walkToDecisionPlaneBend(f, xp, xm, dx0, m0, tol, inf):
         raise ExperimentException("walkToDecisionPlaneBend: Bend is too close.")
     return xxp+dx
 
-def findDualPoints(f, weights, biases, layerId, neuronId, shape, tol, inf):
+def findDualPoints(f, weights, biases, layerId, neuronId, shape, tol, inf, maxFailures=DUAL_FAILURES_MAX):
     """
     Given the weights and biases of previous layers and the current one up to signs, generates dual points of neuron
     neuronId, (x - tol*n, x, x + tol*n): x is projected onto its critical hyperplane (no queries) and then walked inside
     the hyperplane to a decision boundary (hard-label queries only); n is the unit normal of the hyperplane.
+    Yields None and stops once maxFailures attempts in a row produced no dual point.
     """
     def projectOntoCriticalHyperplane(x):
         # Iterated, since for deep layers the local matrix depends on x
@@ -293,7 +298,8 @@ def findDualPoints(f, weights, biases, layerId, neuronId, shape, tol, inf):
             y = x.flatten()@n + b[neuronId]
             x = x - y*n/np.dot(n,n)
         return x, n/np.linalg.norm(n)
-    while True:
+    failures = 0
+    while failures < maxFailures:
         try:
             x, n = projectOntoCriticalHyperplane(np.random.normal(size=shape))
             dx = np.random.normal(size=shape)
@@ -301,10 +307,14 @@ def findDualPoints(f, weights, biases, layerId, neuronId, shape, tol, inf):
             xA, _, _, _ = findDecissionBoundary(f, x, 1e-3*dx/np.linalg.norm(dx), tol, inf)
             # The hyperplane bends where a previous-layer relu toggles: only keep walks that stayed on one piece of it
             if not toggleStatesEqual(weights[:layerId-1], biases[:layerId-1], x, xA):
+                failures += 1
                 continue
+            failures = 0
             yield xA - tol*n, xA, xA + tol*n
         except ExperimentException:
+            failures += 1
             continue
+    yield None
 
 def getWalkingDirection(weights, biases, neuronId, x0):
     """
@@ -411,11 +421,16 @@ def getConfidence(votes_m, votes_p):
     if np.isnan(logp): logp = 0.0
     return logp 
 
-def recoverSign(f, weights, biases, duals, layerId, neuronId, eps, tol, inf, Nmin, Nmax, pastRelusMax, logFile=None):
+def recoverSign(f, weights, biases, duals, layerId, neuronId, eps, tol, inf, Nmin, Nmax, pastRelusMax, logFile=None,
+                NfailMax=None):
     """
     Recovers the sign of a single neuron given the weights and biases of previous layers and the current one up to signs.
-    duals is a generator that produces dual points (xp,xm) on opposite sides of the relu for the target neuron.
+    duals is a generator that produces dual points (xp,xm) on opposite sides of the relu for the target neuron (None when
+    it has run out).  Stops when the vote is confident, after Nmax usable experiments, after NfailMax failed ones (default
+    Nmax), or when the dual points run out, whichever comes first.
     """
+    if NfailMax is None:
+        NfailMax = Nmax
 
     N = 0
     NN = 0
@@ -450,22 +465,32 @@ def recoverSign(f, weights, biases, duals, layerId, neuronId, eps, tol, inf, Nmi
             result['total_execution_time'] = time.time()-t0
             result['logp'] = logp
             results.append(result)
-            if (logp < -3.6889 and N >= Nmin) or (N >= Nmax):   # exp(-3.6889): a wrong majority is less than 2.5% likely
+            if (logp < CONFIDENT and N >= Nmin) or (N >= Nmax):
                 print(f"Stopping after {N} experiments with confidence {logp:.2f} (votes+ {votes_p}, votes- {votes_m})", file=logFile)
                 break
         except ExperimentException as e:
             print(e, file=logFile)
+            if NN - N >= NfailMax:
+                print(f"Warning: Ran out of usable experiments ({NN - N} failed).", file=logFile)
+                break
             continue
     print(f"L {layerId}, N {neuronId}: Experiments {N}/{NN}, votes+ {votes_p}, votes- {votes_m}, confidence {getConfidence(votes_m, votes_p)}", file=logFile)
     return results
 
 
 def recover_neuron_sign(f, weights, biases, layerId, neuronId, Nmin=20, Nmax=1000, logFile=None):
-    """+1 if the guessed sign of neuron neuronId of layer layerId (1-based) is right, -1 if it must be flipped."""
+    """(+1 if the guessed sign of neuron neuronId of layer layerId (1-based) is right, -1 if it must be flipped,
+    whether the vote reached the confidence CONFIDENT, the experiments).
+
+    A vote that stopped early (out of dual points or of usable experiments) still decides by majority, but is reported
+    as not confident; with no votes at all, or a tie, there is nothing to decide and it raises."""
     shape = (weights[0].shape[0],)
     duals = findDualPoints(f, weights, biases, layerId, neuronId, shape, 1e-14, 1e3)
     results = recoverSign(f, weights, biases, duals, layerId, neuronId, 1e-5, 1e-14, 1e14, Nmin, Nmax, 0, logFile=logFile)
     votes_right = sum(r['dON'] < r['dOFF'] for r in results)
     votes_wrong = len(results) - votes_right
-    assert votes_right != votes_wrong, "neuron %d of layer %d: tie" % (neuronId, layerId)
-    return 1 if votes_right > votes_wrong else -1, results
+    if votes_right == votes_wrong:
+        raise ExperimentException("neuron %d of layer %d: sign undecided, %d votes each way (no more usable experiments)"
+                                  % (neuronId, layerId - 1, votes_right))
+    confident = getConfidence(votes_wrong, votes_right) < CONFIDENT and len(results) >= Nmin
+    return 1 if votes_right > votes_wrong else -1, confident, results

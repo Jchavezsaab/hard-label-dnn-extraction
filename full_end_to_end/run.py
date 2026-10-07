@@ -72,14 +72,25 @@ def prefix_files(L):
     return [layer_file(k) for k in range(L)]
 
 
-def parallel(function, jobs):
-    """function(job) in WORKERS forked processes; function must return (result, queries it made)."""
-    if sys.platform == "win32":
-        with multiprocessing.get_context("spawn").Pool(min(WORKERS, len(jobs))) as pool:
-            outputs = pool.map(function, jobs, chunksize=1)
-    else:
-        with multiprocessing.get_context("fork").Pool(min(WORKERS, len(jobs))) as pool:
-            outputs = pool.map(function, jobs, chunksize=1)
+def call_indexed(args):
+    i, function, job = args
+    return i, function(job)
+
+
+def parallel(function, jobs, progress=None):
+    """function(job) in WORKERS forked processes; function must return (result, queries it made).
+
+    Results come back in the order of jobs; progress(finished so far, job, result), if given, is called in this process
+    as each job finishes."""
+    jobs = list(jobs)
+    outputs = [None] * len(jobs)
+    context = multiprocessing.get_context("spawn" if sys.platform == "win32" else "fork")
+    with context.Pool(min(WORKERS, len(jobs))) as pool:
+        tasks = [(i, function, job) for i, job in enumerate(jobs)]
+        for finished, (i, output) in enumerate(pool.imap_unordered(call_indexed, tasks, chunksize=1), start=1):
+            outputs[i] = output
+            if progress:
+                progress(finished, jobs[i], output[0])
     results = [result for result, _ in outputs]
     queries = sum(q for _, q in outputs)
     return results, queries
@@ -209,8 +220,8 @@ def one_neuron_sign(job):
     weights = [rb[:, :-1].T.copy() for rb in layers]
     biases = [rb[:, -1].copy() for rb in layers]
     with open(os.path.join(OUT, "logs", "signs_layer%d_neuron%d.log" % (L, neuron)), "w") as log:
-        sign, _ = signs.recover_neuron_sign(label, weights, biases, L + 1, neuron, VOTES_MIN, VOTES_MAX, log)
-    return sign, query_count() - before
+        sign, confident, votes = signs.recover_neuron_sign(label, weights, biases, L + 1, neuron, VOTES_MIN, VOTES_MAX, log)
+    return (sign, confident, len(votes)), query_count() - before
 
 
 def recover_signs(L, refined):
@@ -219,8 +230,20 @@ def recover_signs(L, refined):
         return
     started = step("layer %d: signs" % L)
     os.makedirs(os.path.join(OUT, "logs"), exist_ok=True)
-    row_signs, queries = parallel(one_neuron_sign, [(L, j, refined) for j in range(WIDTHS[L])])
-    record("layer%d/signs" % L, started, queries)
+
+    def progress(finished, job, result):
+        _, neuron, _ = job
+        sign, confident, votes = result
+        print("sign %d of %d: neuron %d %s after %d votes%s" % (finished, WIDTHS[L], neuron, "kept" if sign > 0 else "flipped",
+              votes, "" if confident else " (majority without confidence)"), flush=True)
+
+    outcomes, queries = parallel(one_neuron_sign, [(L, j, refined) for j in range(WIDTHS[L])], progress)
+    row_signs = [sign for sign, _, _ in outcomes]
+    unsure = [j for j, (_, confident, _) in enumerate(outcomes) if not confident]
+    if unsure:
+        # out of dual points / usable experiments before the vote was confident: the majority is used anyway
+        print("   layer %d: signs of neurons %s are a majority without confidence (see logs/)" % (L, unsure), flush=True)
+    record("layer%d/signs" % L, started, queries, unsure=unsure)
     np.save(layer_file(L), refined * np.array(row_signs)[:, None])
 
 
@@ -231,7 +254,7 @@ def report_error(L, stage, rows):
 
     prefix = [np.load(f) for f in prefix_files(L)]
     relative, absolute, wrong_signs = validate.layer_error(L, rows, prefix)
-    signs = ", %d wrong signs" % wrong_signs if stage == "signs" else ""
+    signs = ", %d of %d signs correct" % (len(rows) - wrong_signs, len(rows)) if stage == "signs" else ""
     print("   layer %d after %s vs. truth: max relative row error %.1e, max parameter error %.1e%s"
           % (L, stage, relative, absolute, signs), flush=True)
 
