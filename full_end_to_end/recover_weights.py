@@ -84,7 +84,7 @@ class Prefix(nn.Module):
 
     @torch.no_grad
     def forward_nolastrelu(self, x):
-        # pre-relu activations of every prefix layer, stacked (L, N, D); used to
+        # pre-relu activations of every prefix layer, one (N, width) tensor per layer (widths may differ); used to
         # reject duals whose zero neuron lives on an earlier layer
         x = x.view(-1, IDIM)
         pre = []
@@ -92,7 +92,7 @@ class Prefix(nn.Module):
             x = layer(x)
             pre.append(x)
             x = nn.functional.relu(x)
-        return torch.stack(pre)
+        return pre
 
 def is_consistent_help(points, prefix, layer=0, do_return_soln=False, allow_close=False):
     samples = []
@@ -110,8 +110,8 @@ def is_consistent_help(points, prefix, layer=0, do_return_soln=False, allow_clos
         hits = hiddens.sum(0)
         order = np.argsort(hits)
 
-        if np.min(hits) == 0 and layer > 0:
-            return rejected
+        # An earlier-layer neuron that is off at every point leaves its weight undetermined: it is solved without that
+        # column and comes back as exactly 0 (par_cluster.settle_zeroed then checks the whole pool for that neuron).
         points_subset = []
         hits = np.zeros(prefix.out_dim)
         
@@ -159,13 +159,11 @@ def is_consistent_help(points, prefix, layer=0, do_return_soln=False, allow_clos
     centered_samples = samples - mean_point
 
     if do_return_soln:
-        U, S, Vt = np.linalg.svd(centered_samples)
-
-        ans = Vt[-1]
-        ans = norm(ans)
-        
-
-        return S, Vt[-1]
+        free = np.sum(np.abs(samples), 0) >= 1e-5      # columns that are zero at every sample have no say in the solution
+        U, S, Vt = np.linalg.svd(centered_samples[:, free])
+        soln = np.zeros(samples.shape[1])
+        soln[free] = Vt[-1]
+        return S, soln
 
     tt = torch.tensor(centered_samples).double()
     S = torch.linalg.svdvals(tt).cpu().numpy()
@@ -188,7 +186,9 @@ def extract_weights(maybe, prefix, layer):
 
         
 def recover_layer(LAYER, clusters, prefix_files, width):
-    """clusters: list of lists of dual points.  Returns (weights (width, in), biases (width,)); rows not found stay zero."""
+    """clusters: list of lists of dual points.  Returns (weights (width, in), biases (width,)); rows not found stay zero.
+
+    A weight on an earlier-layer neuron that is off at every dual of the cluster comes back as exactly 0.0."""
     prefix = Prefix(prefix_files).to(DEVICE)
 
     extracted = np.zeros((width, prefix.out_dim))

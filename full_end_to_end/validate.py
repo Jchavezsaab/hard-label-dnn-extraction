@@ -30,20 +30,35 @@ def true_layers():
     return [np.concatenate([W.T, b[:, None]], axis=1) for W, b in oracle._load_weights()]
 
 
+def zeroed(ours):
+    """Which entries of our [W | b] rows the clustering set to 0 (their input is never on near the neuron): exactly 0.0."""
+    mask = np.zeros(ours.shape, bool)
+    mask[:, :-1] = ours[:, :-1] == 0
+    return mask
+
+
 def match_layer(ours, truth):
     """Match our rows to the true rows of one hidden layer, given how the layer below was matched.
 
-    `truth` must already be expressed in our coordinates of the layer below (see main).  Returns (worst relative error,
-    number of rows whose sign is wrong, the true row index of each of our rows, the scale of each of our rows)."""
+    `truth` must already be expressed in our coordinates of the layer below (see main).  Weights we set to 0 (see
+    zeroed) are left out of the comparison.  We may have fewer rows than the truth (neurons never found were removed as
+    dead): the true neurons nobody matches are left out, and so, through truth_in_our_coordinates, are their weights in
+    the layer above.  Returns (worst relative error, number of rows whose sign is wrong, the true row index of each of
+    our rows, the scale of each of our rows)."""
     n = len(ours)
-    cos = (ours / np.linalg.norm(ours, axis=1, keepdims=True)) @ (truth / np.linalg.norm(truth, axis=1, keepdims=True)).T
+    mask = zeroed(ours)
+    cos = np.zeros((n, len(truth)))
+    for i in range(n):
+        t = np.where(mask[i], 0.0, truth)                 # every true row, without the entries we set to 0 in row i
+        cos[i] = (t @ ours[i]) / (np.linalg.norm(t, axis=1) * np.linalg.norm(ours[i]))
     which = np.argmax(np.abs(cos), axis=1)
-    assert sorted(which) == list(range(n)), "our rows do not match the true neurons one to one"
+    assert len(set(which)) == n, "our rows do not match distinct true neurons"
     scales = np.zeros(n)
     errors = np.zeros(n)
     for i, j in enumerate(which):
-        scales[i] = np.linalg.norm(ours[i]) / np.linalg.norm(truth[j]) * np.sign(cos[i, j])
-        errors[i] = np.linalg.norm(ours[i] / scales[i] - truth[j]) / np.linalg.norm(truth[j])
+        t = np.where(mask[i], 0.0, truth[j])
+        scales[i] = np.linalg.norm(ours[i]) / np.linalg.norm(t) * np.sign(cos[i, j])
+        errors[i] = np.linalg.norm(ours[i] / scales[i] - t) / np.linalg.norm(t)
     return errors.max(), int((scales < 0).sum()), which, np.abs(scales)
 
 
@@ -56,7 +71,7 @@ def truth_in_our_coordinates(true_layer, which, scales):
 def layer_error(L, ours, prefix):
     """How far our rows of hidden layer L are from the truth, given our finished layers below it (`prefix`).
 
-    Every row is matched to its true neuron and rescaled to it (sign included, so rows whose sign is still unknown are
+    Weights we set to 0 (see zeroed) are left out.  Every row is matched to its true neuron and rescaled to it (sign included, so rows whose sign is still unknown are
     compared fairly); for L > 0 the truth is expressed in our coordinates of the layer below, as in main.  Returns (largest
     relative row error, largest absolute parameter error, rows whose sign is wrong)."""
     truth = true_layers()
@@ -66,7 +81,7 @@ def layer_error(L, ours, prefix):
         _, _, which, scales = match_layer(layer, comparable)
     comparable = truth[L] if L == 0 else truth_in_our_coordinates(truth[L], which, scales)
     error, wrong_signs, which, _ = match_layer(ours, comparable)
-    matched = comparable[which]
+    matched = np.where(zeroed(ours), 0.0, comparable[which])
     scale = np.linalg.norm(ours, axis=1) / np.linalg.norm(matched, axis=1) * np.sign((ours * matched).sum(axis=1))
     return error, float(np.abs(ours / scale[:, None] - matched).max()), wrong_signs
 
@@ -101,7 +116,12 @@ def main(out):
     for L in range(len(ours)):
         comparable = truth[L] if L == 0 else truth_in_our_coordinates(truth[L], which, scales)
         error, wrong_signs, which, scales = match_layer(ours[L], comparable)
-        print("layer %d: worst relative error %.1e, %d wrong signs" % (L, error, wrong_signs))
+        excluded = int(zeroed(ours[L]).sum())
+        removed = len(truth[L]) - len(ours[L])
+        print("layer %d: worst relative error %.1e, %d wrong signs%s%s" % (L, error, wrong_signs,
+              ", %d weights set to 0 left out" % excluded if excluded else "",
+              ", %d dead neurons removed (true neurons %s)" % (removed, sorted(set(range(len(truth[L]))) - set(which)))
+              if removed else ""))
         ok = ok and error < 1e-6 and wrong_signs == 0
 
     # head: compared after removing the freedoms an argmax cannot see

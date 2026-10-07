@@ -175,18 +175,34 @@ def solve(L, duals_dir):
         print("== layer %d: cluster (%d clusters from %s)" % (L, len(clusters), clusters_file), flush=True)
     else:
         started = step("layer %d: cluster" % L)
-        clusters = par_cluster.cluster_layer(L, duals_dir, prefix_files(L), WORKERS, WIDTHS[L])
+        clusters, disguised = par_cluster.cluster_layer(L, duals_dir, prefix_files(L), WORKERS, WIDTHS[L])
         pickle.dump(clusters, open(clusters_file + ".partial", "wb"))
-        record("layer%d/cluster" % L, started, 0, clusters=len(clusters))     # the duals carry their normals: no queries needed
+        record("layer%d/cluster" % L, started, 0, clusters=len(clusters),     # the duals carry their normals: no queries needed
+               with_zeroed_weights=sum(1 for c in clusters if c.get("zeroed")), dropped_deeper=disguised)
         os.replace(clusters_file + ".partial", clusters_file)
 
     started = step("layer %d: solve" % L)
     weights, biases = recover_weights.recover_layer(L, [c["cluster"] for c in clusters], prefix_files(L), WIDTHS[L])
-    found = int((np.abs(weights).sum(axis=1) > 0).sum())
-    assert found == WIDTHS[L], "layer %d: only %d of %d neurons found; walk more" % (L, found, WIDTHS[L])
-    rows = np.concatenate([weights, biases[:, None]], axis=1)
+    found_rows = np.abs(weights).sum(axis=1) > 0
+    found = int(found_rows.sum())
+    assert found > 0, "layer %d: no neuron found" % L
+    # A neuron the clustering never found has no dual point the walk could see (never or almost never on): it is taken to
+    # be dead and left out of the network, so this layer has fewer rows and the next one fewer inputs.
+    missing = WIDTHS[L] - found
+    if missing:
+        print("   note: layer %d: %d of %d neurons have no cluster; assumed dead and removed from the network"
+              % (L, missing, WIDTHS[L]), flush=True)
+    rows = np.concatenate([weights, biases[:, None]], axis=1)[found_rows]
+    # Weights exactly 0: the clustering found that input (an earlier-layer neuron) off at every dual of the neuron, so
+    # nothing determines them (par_cluster.settle_zeroed).  They stay 0 through refine and signs, and are left out when
+    # comparing with the truth.
+    zeroed = {int(row): np.flatnonzero(rows[row, :-1] == 0).tolist() for row in np.flatnonzero((rows[:, :-1] == 0).any(axis=1))}
+    for row, inputs in zeroed.items():
+        print("   note: layer %d row %d: weights on inputs %s set to 0 (never on at a dual of this neuron)" % (L, row, inputs),
+              flush=True)
     # clusters beyond the layer's width were merged into an existing neuron or dropped by recover_layer (see its printout)
-    record("layer%d/solve" % L, started, 0, clusters=len(clusters), neurons=found, dropped_or_merged=len(clusters) - found)
+    record("layer%d/solve" % L, started, 0, clusters=len(clusters), neurons=found, dropped_or_merged=len(clusters) - found,
+           zeroed=zeroed, removed=missing)
     np.save(rows_file, rows)
     return rows
 
@@ -204,6 +220,10 @@ def refine_rows(L, rows):
     refined, stats = refine.refine_layer(rows, prefix, K=kinks, procs=WORKERS)
     kept_old = stats["passes"][-1]["kept_old"]
     assert not kept_old, "layer %d: rows %s could not be refined" % (L, kept_old)
+    for j, neuron in stats["passes"][-1]["neurons"].items():
+        if neuron.get("not_refit"):
+            print("   note: layer %d row %d: weights on inputs %s not refined (that input is off at every kink found); kept"
+                  " at the clustering's accuracy" % (L, j, neuron["not_refit"]), flush=True)
     record("layer%d/refine" % L, started, stats["queries"], kinks=kinks)
     np.save(refined_file, refined)
     return refined
@@ -234,10 +254,10 @@ def recover_signs(L, refined):
     def progress(finished, job, result):
         _, neuron, _ = job
         sign, confident, votes = result
-        print("sign %d of %d: neuron %d %s after %d votes%s" % (finished, WIDTHS[L], neuron, "kept" if sign > 0 else "flipped",
+        print("sign %d of %d: neuron %d %s after %d votes%s" % (finished, len(refined), neuron, "kept" if sign > 0 else "flipped",
               votes, "" if confident else " (majority without confidence)"), flush=True)
 
-    outcomes, queries = parallel(one_neuron_sign, [(L, j, refined) for j in range(WIDTHS[L])], progress)
+    outcomes, queries = parallel(one_neuron_sign, [(L, j, refined) for j in range(len(refined))], progress)
     row_signs = [sign for sign, _, _ in outcomes]
     unsure = [j for j, (_, confident, _) in enumerate(outcomes) if not confident]
     if unsure:
@@ -255,8 +275,12 @@ def report_error(L, stage, rows):
     prefix = [np.load(f) for f in prefix_files(L)]
     relative, absolute, wrong_signs = validate.layer_error(L, rows, prefix)
     signs = ", %d of %d signs correct" % (len(rows) - wrong_signs, len(rows)) if stage == "signs" else ""
-    print("   layer %d after %s vs. truth: max relative row error %.1e, max parameter error %.1e%s"
-          % (L, stage, relative, absolute, signs), flush=True)
+    excluded = int((rows[:, :-1] == 0).sum())
+    excluded = ", %d weights set to 0 left out" % excluded if excluded else ""
+    if len(rows) < WIDTHS[L]:
+        excluded += ", %d dead neurons removed" % (WIDTHS[L] - len(rows))
+    print("   layer %d after %s vs. truth: max relative row error %.1e, max parameter error %.1e%s%s"
+          % (L, stage, relative, absolute, signs, excluded), flush=True)
 
 
 def hidden_layer(L, duals_dir):

@@ -354,7 +354,21 @@ def best_subset_residuals(M, keep):
 def fit_row(H, bends, old):
     """[row | bias] = null vector of [H | 1], rows weighted by bend, after trimming outliers (see the trim_* helpers).
 
-    Returns (row scaled to unit norm and oriented like `old`, label-free fit statistics)."""
+    Only the weights the kinks can see are re-fit: a weight that is exactly 0 in `old` (set to 0 by the clustering: its
+    input is never on near this neuron) and a weight whose input is off at every kink keep their value from `old`,
+    rescaled with the re-fit row; the latter are listed in the statistics as "not_refit".  Returns (row scaled to unit
+    norm and oriented like `old`, label-free fit statistics)."""
+    H = np.asarray(H)
+    old = np.asarray(old, dtype=np.float64)
+    fit = old != 0
+    fit[-1] = True
+    fit[:-1] &= np.abs(H).max(axis=0) > 0 if len(H) else True
+    if not fit.all():
+        v, stats = fit_row(H[:, fit[:-1]], bends, old[fit])
+        full = old * (v @ old[fit]) / (old[fit] @ old[fit])         # the columns not re-fit, at the scale of the re-fit
+        full[fit] = v
+        stats["not_refit"] = np.flatnonzero(~fit[:-1] & (old[:-1] != 0)).tolist()
+        return full / np.linalg.norm(full[:-1]), stats
     M = np.concatenate([H, np.ones((len(H), 1))], axis=1)
     weights = np.minimum(np.asarray(bends), 1.0)
     minimum = extra_points(M.shape[1])
