@@ -172,3 +172,4 @@ cython_debug/
 
 data/dual_points*
 sign_recovery/results/*
+*/out/*
