@@ -149,8 +149,28 @@ def is_duplicate(found_clusters, result):
     return any(abs(np.dot(other['weight'], result['weight'])) > 0.8 for other in found_clusters)
 
 
+def disguised(clusters, prefix):
+    """Indices of the clusters whose duals all lie in one on/off region of the other clusters' hyperplanes.
+
+    Wherever this layer's on/off pattern stays the same, the layer is one linear map, so a deeper neuron's zero set is a
+    flat hyperplane behind the prefix too: a cluster of its duals from a single region solves exactly like a neuron of
+    this layer.  The duals of a real neuron of this layer are spread over many regions of its own layer."""
+    found = []
+    for i, c in enumerate(clusters):
+        others = [o for j, o in enumerate(clusters) if j != i]
+        if len(c["cluster"]) < 2 or not others:
+            continue
+        H = prefix.forward(torch.tensor(np.array([d[1] for d in c["cluster"]])).to(DEVICE)).cpu().numpy()
+        W = np.array([o["weight"] for o in others])
+        b = np.array([o["bias"] for o in others])
+        if len({tuple(row) for row in (H @ W.T + b > 0)}) == 1:
+            found.append(i)
+    return found
+
+
 def cluster_layer(layer, duals_dir, prefix_files, num_workers, width):
-    """Returns the clusters found; stops as soon as `width` (the number of neurons in the layer) have been found."""
+    """Returns the clusters found; stops as soon as `width` (the number of neurons in the layer) have been found that
+    are not deeper neurons in disguise (see disguised)."""
     prefix = Prefix(prefix_files).to(DEVICE)
     dual_files = sorted(os.listdir(duals_dir))
     random.Random(BASE_SEED).shuffle(dual_files)
@@ -166,6 +186,7 @@ def cluster_layer(layer, duals_dir, prefix_files, num_workers, width):
     files_loaded = FILES_AT_START
 
     found_clusters = []
+    rejected = []              # deeper neurons in disguise: their duals are skipped and they are not accepted again
     max_active = num_workers * 2
     next_seed = 0
     futures = {}
@@ -174,7 +195,7 @@ def cluster_layer(layer, duals_dir, prefix_files, num_workers, width):
         nonlocal next_seed
         while len(futures) < max_active and next_seed < len(seeds):
             worker = next_seed % num_workers
-            args = (next_seed, seeds[next_seed], list(found_clusters), dual_files, worker, worker)
+            args = (next_seed, seeds[next_seed], found_clusters + rejected, dual_files, worker, worker)
             futures[executor.submit(process_single_candidate, args)] = next_seed
             next_seed += 1
 
@@ -184,9 +205,15 @@ def cluster_layer(layer, duals_dir, prefix_files, num_workers, width):
             done = next(as_completed(futures))
             futures.pop(done)
             result = done.result()
-            if result is not None and not is_duplicate(found_clusters, result):
+            if result is not None and not is_duplicate(found_clusters + rejected, result):
                 found_clusters.append(result)
                 print("cluster %d of %d: %d duals" % (len(found_clusters), width, len(result['cluster'])), flush=True)
+                if len(found_clusters) == width:
+                    # Checked once the layer looks complete: only then are the other clusters' hyperplanes all there.
+                    for i in reversed(disguised(found_clusters, prefix)):
+                        print("   dropped cluster of %d duals: all in one on/off region of this layer, a deeper neuron"
+                              % len(found_clusters[i]['cluster']), flush=True)
+                        rejected.append(found_clusters.pop(i))
                 if len(found_clusters) == width:
                     # Every neuron of the layer is accounted for: the remaining seeds can only be duals of deeper layers.
                     for future in futures:
@@ -197,4 +224,6 @@ def cluster_layer(layer, duals_dir, prefix_files, num_workers, width):
                 seeds.extend(load_seeds(dual_files[files_loaded]))
                 files_loaded += 1
             submit(executor)
+    if rejected:
+        print("   %d clusters dropped as deeper neurons" % len(rejected), flush=True)
     return found_clusters
