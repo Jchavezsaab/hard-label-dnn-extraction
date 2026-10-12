@@ -1,9 +1,13 @@
 # Sign recovery of one neuron from hard labels (the black-box sign recovery of the paper).
 #
 # recoverSign() is given the recovered layers up to and including the target layer (the target layer with the signs
-# still unknown, i.e. a guess), and the oracle.  At dual points of the target neuron it walks along the decision
-# boundary on both sides of the neuron's hyperplane until the boundary bends; if the guessed sign is right, the side
-# where the neuron is ON is the one where a bend is found (dON < dOFF).  Majority over many dual points.
+# still unknown, i.e. a guess), and the oracle.  At each dual point of the target neuron j the probe is v = e_j pinv(M),
+# M the local matrix from the input to the target layer: the input step that moves neuron j and, where M has full rank,
+# no other neuron of the target layer.  The decision boundary's normal is measured on both sides of the neuron's
+# hyperplane; where the neuron is off the boundary ignores it and its normal is orthogonal to v, where it is on it is
+# not.  The side whose boundary makes the larger angle with v's hyperplane (|cos(normal, v)| larger) gets the vote for
+# being the on side.  Dual points are taken wherever they fall: M may be singular there, and v then also moves other
+# neurons of the target layer, so a single experiment can be wrong; the majority over many dual points decides.
 # Weights are in keras layout: weights[l] is (in, out), x @ W + b.
 import time
 import numpy as np
@@ -153,20 +157,6 @@ def getLocalMatrixAndBias(weights, biases, x0):
     return np.array(MM), np.array(bb)
 
 
-def toggledNeuron(weights, biases, x0, x1):
-    x00 = x0.copy()
-    x11 = x1.copy()
-    for i in range(len(weights)):
-        x00 = x00.flatten() @ weights[i] + biases[i].flatten()
-        x11 = x11.flatten() @ weights[i] + biases[i].flatten()
-        for j in range(len(x00)):
-            if np.sign(x00[j]) != np.sign(x11[j]):
-                return i+1, j
-        x00[x00 < 0] = 0
-        x11[x11 < 0] = 0
-    raise ExperimentException("No toggled neuron found")
-    return None, None
-
 def toggleStatesEqual(weights, biases, x0, x1):
     x00 = x0.copy()
     x11 = x1.copy()
@@ -245,38 +235,6 @@ def decissionPlaneNormalVector(f, x0, n, eps, tol):
         raise ExperimentException(f"decissionPlaneNormalVector: {e.message}")
     return m
 
-def walkToDecisionPlaneBend(f, xp, xm, dx0, m0, tol, inf):
-    """
-    Given two points xp and xm that are close together on opposite sides of the decision plane, walks in the direction
-    of dx0 (projected onto the decision plane given by m0) until we find a bend in the decision plane.
-    Returns the point just after the bend (to a distance tol)
-    """
-    if (f(xp) == f(xm)):
-        raise ExperimentException("walkToDecisionPlaneBend: Points are not on opposite sides of the decision boundary.")
-    dx = dx0 - np.dot(dx0, m0)*m0/np.dot(m0, m0)
-    # Double displacement until we cross boundary
-    while True:
-        if f(xp+dx) == f(xm+dx):
-            break
-        dx *= 2
-        if( np.dot(dx.flatten(),dx.flatten()) > inf**2):
-            raise ExperimentException(f"walkToDecisionPlaneBend4: Walked too far without finding a bend.")
-    # Binary search to find the point where the boundary was crossed
-    timeout = 0
-    xxp = xp.copy()
-    xxm = xm.copy()
-    while np.dot(dx.flatten(), dx.flatten()) > tol**2:
-        if f(xxp+dx/2) != f(xxm+dx/2):
-            xxp += dx/2
-            xxm += dx/2
-        dx /= 2
-        timeout += 1
-        if timeout > 10000:
-            raise ExperimentException(f"walkToDecisionPlaneBend4: Timeout while searching for decision boundary bend.")
-    if np.all(xxp == xp):
-        raise ExperimentException("walkToDecisionPlaneBend: Bend is too close.")
-    return xxp+dx
-
 def findDualPoints(f, weights, biases, layerId, neuronId, shape, tol, inf, maxFailures=DUAL_FAILURES_MAX):
     """
     Given the weights and biases of previous layers and the current one up to signs, generates dual points of neuron
@@ -287,14 +245,10 @@ def findDualPoints(f, weights, biases, layerId, neuronId, shape, tol, inf, maxFa
     def projectOntoCriticalHyperplane(x):
         # Iterated, since for deep layers the local matrix depends on x
         for _ in range(20):
-            # Prefer the piece where every previous-layer neuron is active (full control of the target layer): flip the inactive
-            # ones on, layer by layer (weights[:l], l < layerId, are the layers we recovered below this one; no queries)
-            for l in range(1, layerId):
-                M,b = getLocalMatrixAndBias(weights[:l], biases[:l], x.flatten())
-                y = x.flatten()@M + b
-                x = x + (np.abs(y) - y)@np.linalg.pinv(M)
             M,b = getLocalMatrixAndBias(weights[:layerId], biases[:layerId], x.flatten())
             n = M[:,neuronId]
+            if np.dot(n,n) == 0:
+                raise ExperimentException("projectOntoCriticalHyperplane: the neuron does not depend on x here.")
             y = x.flatten()@n + b[neuronId]
             x = x - y*n/np.dot(n,n)
         return x, n/np.linalg.norm(n)
@@ -316,101 +270,30 @@ def findDualPoints(f, weights, biases, layerId, neuronId, shape, tol, inf, maxFa
             continue
     yield None
 
-def getWalkingDirection(weights, biases, neuronId, x0):
+def analyzeDualPoint(f, weights, biases, x0, layerId, neuronId, eps, tol):
     """
-    Given the weights and biases of previous layers and the current one up to signs, computes the optimal walking direction
-    for neuron neuronId by multiplying its signature by the pseudoinverse of the local matrix.
+    One experiment at the dual point x0 of neuron neuronId of layer layerId (1-based): the decision boundary's normal on
+    each side of the neuron's hyperplane (decissionPlaneNormalVector stays eps/10 clear of it) and its |cos| with the
+    probe v = e_j pinv(M) (see the top of this file).  'ON' is the side where our row (the guessed sign) is positive;
+    the vote is for the guessed sign if that side's |cos| is the larger one.
     """
-    M,_ = getLocalMatrixAndBias(weights, biases, x0.flatten())
-    if np.linalg.cond(M)<1e14:
-        y = np.zeros(shape=[weights[-1].shape[1]])
-        y[neuronId] = 1
-        dx = y@np.linalg.pinv(M)
-        return dx
-    if len(weights) > 1:
-        Fm1,bm1 = getLocalMatrixAndBias(weights[:-1], biases[:-1], x0.flatten())
-        y = x0.flatten()@Fm1 + bm1.flatten()
-        Fm1[:, np.where(y <= 0)] = 0
-        invF = np.linalg.pinv(Fm1)
-    else:
-        # special case for first hidden layer
-        Fm1 = np.identity(x0.flatten().shape[0])
-        invF = Fm1
-    sig = weights[-1][:, neuronId].copy() # signature of target neuron
-    dx = sig@invF # optimal wiggle
-    return dx
-
-def analyzeDualPoint(f, weights, biases, xp, xm, layerId, neuronId, eps, tol, inf, pastRelusMax=0):
-    """
-    Given the weights and biases of the previous layers and the current one up to signs, and xp,xm on opposite sides of a relu (at least eps away from it)
-    for neuron neuronId in layer layerId, walks in the optimal direction and computes the distance until a future neuron is toggled on either side.
-    The walking direction will be adjusted after crossing a previous-layer relu, up to a timeout of pastReluMax times. 
-    """
+    M, _ = getLocalMatrixAndBias(weights[:layerId], biases[:layerId], x0.flatten())
+    n = M[:, neuronId]                       # gradient of our row's pre-activation: +n points to the side where it is > 0
+    if np.dot(n, n) == 0:
+        raise ExperimentException("analyzeDualPoint: the neuron does not depend on x here.")
+    e_j = np.zeros(M.shape[1])
+    e_j[neuronId] = 1
+    v = e_j @ np.linalg.pinv(M)              # moves neuron j; also other target-layer neurons where M is singular
+    result = {}
     try:
-        result = {}
-        dx0 = getWalkingDirection(weights[:layerId], biases[:layerId], neuronId, xp)
-        M0,b0 = getLocalMatrixAndBias(weights[:layerId], biases[:layerId], xp.flatten())
-        yp = (xp.flatten()@M0 + b0.flatten())[neuronId]
-        if yp < 0:
-            xp, xm = xm, xp
-
-        dON = 0
-        dOFF = 0
-        for (side, side_sign) in [('ON', 1), ('OFF', -1)]:
-            if side == 'ON':xA = xp.copy()
-            else: xA = xm.copy()
-            M = M0.copy()
-            b = b0.copy()
-            dx = dx0.copy()
-            n = M[:,neuronId].copy()*side_sign
-            pastRelus = 0
-            while True:
-                m = decissionPlaneNormalVector(f, xA, n, eps, tol)
-
-                dx = (dx - np.dot(dx,m)*m/np.dot(m,m))*side_sign # project onto the decision boundary
-
-                xAp = xA + eps*m/np.linalg.norm(m)
-                xAm = xA - eps*m/np.linalg.norm(m)
-
-                try:
-                    xB = walkToDecisionPlaneBend(f, xAp, xAm, dx, m, tol, inf=1e3)
-                except ExperimentException as e: # no bend at all on this side: f ignores dx there, i.e. the neuron is OFF (full control)
-                    if 'Walked too far' not in e.message: raise
-                    if side=='ON': dON = 1e10
-                    else: dOFF = 1e10
-                    break
-
-                if side=='ON': dON += np.linalg.norm((xB - xA).flatten())
-                else: dOFF += np.linalg.norm((xB - xA).flatten())
-
-                xB += dx * 10*eps/ np.linalg.norm(dx.flatten())
-
-                if toggleStatesEqual(weights[:layerId], biases[:layerId], xA, xB):
-                    break
-
-                pastRelus += 1
-                if pastRelus > pastRelusMax:
-                    if side=='ON': dON = 1e10
-                    else: dOFF = 1e10
-                    break
-                prevLayer, prevNeuron = toggledNeuron(weights[:layerId], biases[:layerId], xA, xB)
-                M,b = getLocalMatrixAndBias(weights[:prevLayer], biases[:prevLayer], xB.flatten())
-                n = M[:,prevNeuron].copy()
-                y = xB.flatten()@M + b.flatten()
-                if y[prevNeuron] < 0:
-                    n = -n
-                dx = getWalkingDirection(weights[:layerId], biases[:layerId], neuronId, xB)
-                xA = xB.copy()
-                result['paseRelus'+side] = pastRelus
-        result['dON'] = dON
-        result['dOFF'] = dOFF
-        result['succcess'] = True
-        if dON==1e10 and dOFF==1e10:
-            raise ExperimentException(f"analyzeDualPoint: Too many past relus on both sides.")
+        for side, side_sign in (('ON', 1), ('OFF', -1)):
+            m = decissionPlaneNormalVector(f, x0, side_sign * n, eps, tol)
+            result['cos' + side] = abs(np.dot(m.flatten(), v)) / (np.linalg.norm(m) * np.linalg.norm(v))
     except ExperimentException as e:
         raise ExperimentException(f"analyzeDualPoint: {e.message}")
+    result['right'] = bool(result['cosON'] > result['cosOFF'])
     return result
-        
+
 def getConfidence(votes_m, votes_p): 
     # Check confidence
     if (votes_m==0) and (votes_p==0): 
@@ -421,12 +304,11 @@ def getConfidence(votes_m, votes_p):
     if np.isnan(logp): logp = 0.0
     return logp 
 
-def recoverSign(f, weights, biases, duals, layerId, neuronId, eps, tol, inf, Nmin, Nmax, pastRelusMax, logFile=None,
-                NfailMax=None):
+def recoverSign(f, weights, biases, duals, layerId, neuronId, eps, tol, Nmin, Nmax, logFile=None, NfailMax=None):
     """
     Recovers the sign of a single neuron given the weights and biases of previous layers and the current one up to signs.
-    duals is a generator that produces dual points (xp,xm) on opposite sides of the relu for the target neuron (None when
-    it has run out).  Stops when the vote is confident, after Nmax usable experiments, after NfailMax failed ones (default
+    duals is a generator that produces dual points (x - tol n, x, x + tol n) of the target neuron (None when it has run
+    out); each one is one experiment (analyzeDualPoint).  Stops when the vote is confident, after Nmax usable experiments, after NfailMax failed ones (default
     Nmax), or when the dual points run out, whichever comes first.
     """
     if NfailMax is None:
@@ -445,16 +327,15 @@ def recoverSign(f, weights, biases, duals, layerId, neuronId, eps, tol, inf, Nmi
             print(f"L {layerId}, N {neuronId}: Experiments {N}/{NN}, votes+ {votes_p}, votes- {votes_m}, confidence {getConfidence(votes_m, votes_p)}", file=logFile)
             print("Warning: Ran out of dual points.", file=logFile)
             break
-        xp, _, xm = x_dual
+        _, x0, _ = x_dual
         if NN % 1 == 0:
             print(f"L {layerId}, N {neuronId}: Experiments {N}/{NN}, votes+ {votes_p}, votes- {votes_m}, confidence {getConfidence(votes_m, votes_p)}", file=logFile)
         NN += 1
         try:
             t1 = time.time()
-            result = analyzeDualPoint(f, weights, biases, xp, xm, layerId, neuronId, eps=eps, tol=tol, inf=inf, pastRelusMax=pastRelusMax)
+            result = analyzeDualPoint(f, weights, biases, x0, layerId, neuronId, eps=eps, tol=tol)
             result['dual_point_id'] = dual_point_id
-            dON, dOFF = result['dON'], result['dOFF']
-            if dON < dOFF: 
+            if result['right']:
                 votes_p += 1
             else:
                 votes_m += 1
@@ -486,8 +367,8 @@ def recover_neuron_sign(f, weights, biases, layerId, neuronId, Nmin=20, Nmax=100
     as not confident; with no votes at all, or a tie, there is nothing to decide and it raises."""
     shape = (weights[0].shape[0],)
     duals = findDualPoints(f, weights, biases, layerId, neuronId, shape, 1e-14, 1e3)
-    results = recoverSign(f, weights, biases, duals, layerId, neuronId, 1e-5, 1e-14, 1e14, Nmin, Nmax, 0, logFile=logFile)
-    votes_right = sum(r['dON'] < r['dOFF'] for r in results)
+    results = recoverSign(f, weights, biases, duals, layerId, neuronId, 1e-5, 1e-14, Nmin, Nmax, logFile=logFile)
+    votes_right = sum(r['right'] for r in results)
     votes_wrong = len(results) - votes_right
     if votes_right == votes_wrong:
         raise ExperimentException("neuron %d of layer %d: sign undecided, %d votes each way (no more usable experiments)"
