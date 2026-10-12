@@ -22,6 +22,10 @@ SPLIT_MIN = 0.25           # a cluster split by fewer than this fraction of the 
 PRUNE_SIZES = (4, 6)       # a cluster whose members have no common hyperplane: subsets of these sizes are tried (prune)
 PRUNE_TRIALS = 40          #   this many of each size
 PRUNES_MAX = 3             #   at most this many times per seed
+FACE_TOL = 1e-6            # a row whose input normal is within this (1 - |cos|) of a boundary normal at a dual ...
+FACE_SHARE = 0.5           # ... at this share of its duals is a face of the decision boundary (is_face)
+FACE_PLANE_TOL = 1e-5      # a dual lies on a face if its activation gives the face's bias to this
+FACES_MAX = 3              # a seed gives up after this many faces
 IDENTITY_MAX = 1e-8        # a hyperplane that moves off its duals by less than this (relative) holds everywhere (prefix_identity)
 FILES_AT_START = 5         # dual files loaded up front; one more per 1000 seeds tried
 
@@ -98,6 +102,12 @@ def process_single_candidate(args):
     last_try_size = MIN_CLUSTER
     prunes = 0
     rng = np.random.default_rng(cluster_id)
+    faces = []                # decision boundary faces (w, bias) the members turned out to fit: their duals stay out
+    restart = 0               # the scan position the abort rules count from (moved on when a face is dropped)
+
+    def on_face(dual, face):
+        h = prefix.forward(torch.tensor(np.array(dual[1])).to(DEVICE)).cpu().numpy()[0]
+        return abs(h @ face[0] - face[1]) < FACE_PLANE_TOL
 
     def prune_or_stop(why):
         """The members fail together: keep the ones on the best hyperplane through the seed and grow on, or give up."""
@@ -118,16 +128,16 @@ def process_single_candidate(args):
         if b is a:
             logging.info(f"[W{worker_id}] Skip adding the same neuron twice")
             continue
-        if j > 1000 and len(maybe) == 1:
+        if j - restart > 1000 and len(maybe) == 1:
             logging.info(f"[W{worker_id}] Abort {cluster_id} because <1000")
             break
-        if len(maybe)**2/(j+1) < .0001:
+        if len(maybe)**2/(j - restart + 1) < .0001:
             logging.info(f"[W{worker_id}] Abort {cluster_id} because rare")
             break
 
         S = is_consistent((a, b), prefix, layer=layer, do_return_soln=False)
         
-        if type(S) == np.float64 and S < 1e-5:
+        if type(S) == np.float64 and S < 1e-5 and not any(on_face(b, face) for face in faces):
             an1, an2 = a[3:]          # the boundary normals on either side of each dual, stored by the walk
             bn1, bn2 = b[3:]
             if an1 @ bn1 > .8 or an1 @ bn2 > .8 or an2 @ bn1 > .8 or an2 @ bn2 > .8:
@@ -149,6 +159,18 @@ def process_single_candidate(args):
                     if prune_or_stop("Invalid cluster"):
                         continue
                     break
+                if is_face(maybe, soln, prefix):
+                    # the members fit a face of the decision boundary, not a neuron: keep the seed and whatever is off
+                    # the face, keep the face's duals out from now on, and grow on
+                    H = prefix.forward(torch.tensor(np.array([m[1] for m in maybe])).to(DEVICE)).cpu().numpy()
+                    faces.append((soln, float(np.median(H @ soln))))
+                    logging.info(f"[W{worker_id}] {cluster_id}: decision boundary face of {len(maybe)} duals")
+                    if len(faces) > FACES_MAX:
+                        break
+                    maybe = [a] + [m for m in maybe[1:] if not on_face(m, faces[-1])]
+                    last_try_size = max(MIN_CLUSTER, len(maybe) + 1)
+                    restart = j
+                    continue
                 if np.any(soln == 0) and len(maybe) < MIN_CLUSTER_ZEROED:
                     # weights set to 0 leave few unknowns: a few duals of different neurons fit them by accident
                     last_try_size = MIN_CLUSTER_ZEROED
@@ -175,6 +197,34 @@ def process_single_candidate(args):
                 last_try_size *= 2
     
     return None
+
+
+def input_normal(prefix, x0, w):
+    """Unit input-space normal at x0 of the hyperplane w . h + b = 0 behind the prefix (in x0's on/off pattern)."""
+    x = np.asarray(x0, dtype=np.float64)
+    A = np.eye(len(x))
+    for linear in prefix.fcs:
+        W = linear.weight.detach().cpu().numpy()
+        z = W @ x + linear.bias.detach().cpu().numpy()
+        on = z > 0
+        A = (W @ A) * on[:, None]
+        x = np.where(on, z, 0.0)
+    n = A.T @ w
+    return n / max(np.linalg.norm(n), 1e-300)
+
+
+def is_face(members, w, prefix):
+    """Whether the hyperplane w is a face of the decision boundary rather than a neuron.
+
+    Every dual lies on the decision boundary, and its bend line lies in both boundary pieces next to it.  Wherever the
+    layers above keep their pattern, a piece of the boundary is flat behind the prefix, so all the bends on its edges
+    (whatever neuron makes them) have their bend lines in it: their duals fit it exactly, like a cluster.  Such a face's
+    normal is one of the two boundary normals measured at the dual; a neuron's is a combination of both."""
+    face = 0
+    for d in members:
+        n = input_normal(prefix, d[1], w)
+        face += max(abs(n @ d[3]), abs(n @ d[4])) > 1 - FACE_TOL
+    return face >= FACE_SHARE * len(members)
 
 
 def prune(a, maybe, prefix, layer, rng):
