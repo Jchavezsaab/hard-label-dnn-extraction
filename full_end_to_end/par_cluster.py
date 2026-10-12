@@ -18,6 +18,7 @@ multiprocessing.set_start_method('spawn', force=True)
 BASE_SEED = 10000
 MIN_CLUSTER = 3
 MIN_CLUSTER_ZEROED = 12    # a cluster whose solution sets weights to 0 must grow to this many duals before it counts
+SPLIT_MIN = 0.25           # a cluster split by fewer than this fraction of the others' hyperplanes is a deeper neuron (disguised)
 IDENTITY_MAX = 1e-8        # a hyperplane that moves off its duals by less than this (relative) holds everywhere (prefix_identity)
 FILES_AT_START = 5         # dual files loaded up front; one more per 1000 seeds tried
 
@@ -177,15 +178,26 @@ def prefix_identity(result, prefix, directions=4):
 
 
 def is_duplicate(found_clusters, result):
-    return any(abs(np.dot(other['weight'], result['weight'])) > 0.8 for other in found_clusters)
+    """Whether result is a neuron already found.  Weights set to 0 (exactly 0.0) are unknown, not zero, and two clusters
+    of one neuron may zero different ones: they are compared on the weights both of them know."""
+    w = result['weight']
+    for other in found_clusters:
+        known = (w != 0) & (other['weight'] != 0)
+        a, b = w[known], other['weight'][known]
+        if len(a) and abs(a @ b) > 0.8 * np.linalg.norm(a) * np.linalg.norm(b):
+            return True
+    return False
 
 
 def disguised(clusters, prefix):
-    """Indices of the clusters whose duals all lie in one on/off region of the other clusters' hyperplanes.
+    """Indices of the clusters whose duals are split by fewer than SPLIT_MIN of the other clusters' hyperplanes.
 
     Wherever this layer's on/off pattern stays the same, the layer is one linear map, so a deeper neuron's zero set is a
     flat hyperplane behind the prefix too: a cluster of its duals from a single region solves exactly like a neuron of
-    this layer.  The duals of a real neuron of this layer are spread over many regions of its own layer."""
+    this layer (and so, once weights are set to 0 and few unknowns are left, can duals of several neurons from few
+    regions).  The duals of a real neuron of this layer are spread over many regions of its own layer, on both sides of
+    most of the other neurons' hyperplanes.  Not all of them: the other clusters may include such impostors, or be
+    inexact where they have weights set to 0, so a cluster is not required to lie in one region of all of them."""
     found = []
     for i, c in enumerate(clusters):
         others = [o for j, o in enumerate(clusters) if j != i]
@@ -194,7 +206,9 @@ def disguised(clusters, prefix):
         H = prefix.forward(torch.tensor(np.array([d[1] for d in c["cluster"]])).to(DEVICE)).cpu().numpy()
         W = np.array([o["weight"] for o in others])
         b = np.array([o["bias"] for o in others])
-        if len({tuple(row) for row in (H @ W.T + b > 0)}) == 1:
+        side = H @ W.T + b > 0
+        split = np.sum(side.any(axis=0) & ~side.all(axis=0))
+        if split < SPLIT_MIN * len(others):
             found.append(i)
     return found
 

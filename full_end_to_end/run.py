@@ -221,11 +221,19 @@ def one_neuron_sign(job):
     biases = [rb[:, -1].copy() for rb in layers]
     with open(os.path.join(OUT, "logs", "signs_layer%d_neuron%d.log" % (L, neuron)), "w") as log:
         sign, confident, votes = signs.recover_neuron_sign(label, weights, biases, L + 1, neuron, VOTES_MIN, VOTES_MAX, log)
-    return (sign, confident, len(votes)), query_count() - before
+    experiments = [{key: r[key] for key in ('M', 'z', 'mON', 'mOFF')} for r in votes]     # for the second pass
+    return (sign, confident, len(votes), experiments), query_count() - before
 
 
 def recover_signs(L, refined):
-    """Find the sign of every row; the result is the finished layer."""
+    """Find the sign of every row; the result is the finished layer.
+
+    The first pass votes over every experiment.  The second pass makes no queries: with the first pass's signs telling
+    which target-layer neurons are active at each dual point, it computes every experiment's probe again so that it
+    leaves only those alone, and votes again with the normals the first pass measured (signs.reassess).  On a tie, the
+    first pass's sign stands."""
+    import signs
+
     if os.path.exists(layer_file(L)):
         return
     started = step("layer %d: signs" % L)
@@ -233,18 +241,30 @@ def recover_signs(L, refined):
 
     def progress(finished, job, result):
         _, neuron, _ = job
-        sign, confident, votes = result
+        sign, confident, votes, _ = result
         print("sign %d of %d: neuron %d %s after %d votes%s" % (finished, WIDTHS[L], neuron, "kept" if sign > 0 else "flipped",
               votes, "" if confident else " (majority without confidence)"), flush=True)
 
     outcomes, queries = parallel(one_neuron_sign, [(L, j, refined) for j in range(WIDTHS[L])], progress)
-    row_signs = [sign for sign, _, _ in outcomes]
-    unsure = [j for j, (_, confident, _) in enumerate(outcomes) if not confident]
+    first = np.array([sign for sign, _, _, _ in outcomes])
+    row_signs = first.copy()
+    confident = [c for _, c, _, _ in outcomes]
+    for j, (_, _, votes, experiments) in enumerate(outcomes):
+        sign, sure, _ = signs.reassess(experiments, j, first, VOTES_MIN)
+        print("   second pass: neuron %d (%d experiments): %s" % (j, votes,
+              "tie, first pass stands" if sign is None else "%s%s" % ("kept" if sign > 0 else "flipped",
+              "" if sure else " (majority without confidence)")), flush=True)
+        if sign is not None:
+            row_signs[j] = sign
+            confident[j] = sure
+    changed = np.flatnonzero(row_signs != first).tolist()
+    print("   layer %d: the second pass changed the signs of neurons %s" % (L, changed), flush=True)
+    unsure = [j for j, sure in enumerate(confident) if not sure]
     if unsure:
         # out of dual points / usable experiments before the vote was confident: the majority is used anyway
         print("   layer %d: signs of neurons %s are a majority without confidence (see logs/)" % (L, unsure), flush=True)
-    record("layer%d/signs" % L, started, queries, unsure=unsure)
-    np.save(layer_file(L), refined * np.array(row_signs)[:, None])
+    record("layer%d/signs" % L, started, queries, unsure=unsure, second_pass_changed=changed)
+    np.save(layer_file(L), refined * row_signs[:, None])
 
 
 def report_error(L, stage, rows):

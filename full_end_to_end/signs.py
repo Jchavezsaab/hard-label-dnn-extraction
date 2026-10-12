@@ -277,17 +277,19 @@ def analyzeDualPoint(f, weights, biases, x0, layerId, neuronId, eps, tol):
     probe v = e_j pinv(M) (see the top of this file).  'ON' is the side where our row (the guessed sign) is positive;
     the vote is for the guessed sign if that side's |cos| is the larger one.
     """
-    M, _ = getLocalMatrixAndBias(weights[:layerId], biases[:layerId], x0.flatten())
+    M, b = getLocalMatrixAndBias(weights[:layerId], biases[:layerId], x0.flatten())
     n = M[:, neuronId]                       # gradient of our row's pre-activation: +n points to the side where it is > 0
     if np.dot(n, n) == 0:
         raise ExperimentException("analyzeDualPoint: the neuron does not depend on x here.")
     e_j = np.zeros(M.shape[1])
     e_j[neuronId] = 1
     v = e_j @ np.linalg.pinv(M)              # moves neuron j; also other target-layer neurons where M is singular
-    result = {}
+    # for reassess: the local matrix, our rows' pre-activations here (which are active) and the measured normals
+    result = {'M': M, 'z': x0.flatten() @ M + b}
     try:
         for side, side_sign in (('ON', 1), ('OFF', -1)):
             m = decissionPlaneNormalVector(f, x0, side_sign * n, eps, tol)
+            result['m' + side] = m.flatten()
             result['cos' + side] = abs(np.dot(m.flatten(), v)) / (np.linalg.norm(m) * np.linalg.norm(v))
     except ExperimentException as e:
         raise ExperimentException(f"analyzeDualPoint: {e.message}")
@@ -357,6 +359,29 @@ def recoverSign(f, weights, biases, duals, layerId, neuronId, eps, tol, Nmin, Nm
             continue
     print(f"L {layerId}, N {neuronId}: Experiments {N}/{NN}, votes+ {votes_p}, votes- {votes_m}, confidence {getConfidence(votes_m, votes_p)}", file=logFile)
     return results
+
+
+def reassess(results, neuronId, estimates, Nmin=20):
+    """Second look at a neuron's experiments, given estimates of every target-layer row's sign (no queries).
+
+    Only the target-layer neurons that are active at a dual point enter the decision boundary's normal there, and the
+    estimates say which those are (estimates * z > 0).  So the probe is computed again as v = e_j pinv(M_A), M_A the
+    columns of M of j and of the others estimated active: as close as possible to moving none of THOSE, instead of
+    none of all the others.  Every experiment is voted again with the |cos| of its measured normals against this probe.
+    Returns (sign, confident, votes); sign None on a tie."""
+    votes_right = 0
+    for r in results:
+        active = np.asarray(estimates) * np.asarray(r['z']) > 0
+        active[neuronId] = True
+        columns = np.flatnonzero(active)
+        v = np.linalg.pinv(r['M'][:, columns])[int(np.flatnonzero(columns == neuronId)[0])]
+        cos = {side: abs(r['m' + side] @ v) / (np.linalg.norm(r['m' + side]) * np.linalg.norm(v)) for side in ('ON', 'OFF')}
+        votes_right += cos['ON'] > cos['OFF']
+    votes_wrong = len(results) - votes_right
+    if votes_right == votes_wrong:
+        return None, False, len(results)
+    confident = getConfidence(votes_wrong, votes_right) < CONFIDENT and len(results) >= Nmin
+    return 1 if votes_right > votes_wrong else -1, confident, len(results)
 
 
 def recover_neuron_sign(f, weights, biases, layerId, neuronId, Nmin=20, Nmax=1000, logFile=None):

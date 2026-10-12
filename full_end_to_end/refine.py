@@ -17,6 +17,7 @@ COLLINEAR = 256
 MIN_TANGENT = 0.1
 NO_BEND = 1e-6
 SECOND_KINK_STATIONS = 8
+SEEN_MIN = 3                # fit_row: a prefix unit on at fewer kinks than this keeps its old weight
 AGREE = 2                   # complete_row: equations beyond the unknowns that must agree exactly
 
 
@@ -532,14 +533,17 @@ def fit_row(H, bends, old):
     Returns (row scaled to unit norm and oriented like `old`, label-free fit statistics).
 
     A prefix unit that is off at every kink leaves its weight undetermined: the fit leaves it out and keeps the weight
-    `old` has (for a weight the clustering set to 0, the one complete_row found)."""
+    `old` has (for a weight the clustering set to 0, the one complete_row found).  So does one that is on at fewer than
+    SEEN_MIN kinks, or so weakly that the fit has no clean null direction (sv_gap below BAD_RANK): then the unit with the
+    least support among the kept kinks is left out, one at a time."""
     old = np.asarray(old, dtype=np.float64)
-    seen = np.r_[np.any(H != 0, axis=0), True]
+    seen = np.r_[np.sum(H != 0, axis=0) >= SEEN_MIN, True]
     if not seen.all():
         v, stats = fit_row(H[:, seen[:-1]], bends, old[seen])
         full = old * (v @ old[seen]) / (old[seen] @ old[seen])          # old, at the scale of the fitted part
         full[seen] = v
-        stats["kept_weights"] = np.flatnonzero(~seen[:-1]).tolist()
+        inner = np.flatnonzero(seen[:-1])[stats.get("kept_weights", [])]             # left out by the fit below
+        stats["kept_weights"] = sorted(np.flatnonzero(~seen[:-1]).tolist() + inner.tolist())
         return full / np.linalg.norm(full[:-1]), stats
     M = np.concatenate([H, np.ones((len(H), 1))], axis=1)
     weights = np.minimum(np.asarray(bends), 1.0)
@@ -572,6 +576,12 @@ def fit_row(H, bends, old):
         resid_rms=float(np.sqrt(np.mean((M[keep] @ v) ** 2))),
         sv_gap=float(S[-2] / np.sqrt(keep.sum())),
     )
+    if stats["sv_gap"] < BAD_RANK and H.shape[1] > 1:
+        # some unit is barely seen by the kinks kept: leave out the least supported one and keep old's weight for it
+        weakest = int(np.argmin(np.linalg.norm(H[keep], axis=0)))
+        H = H.copy()
+        H[:, weakest] = 0.0
+        return fit_row(H, bends, old)
     return v, stats
 
 
