@@ -33,17 +33,25 @@ def true_layers():
 def match_layer(ours, truth):
     """Match our rows to the true rows of one hidden layer, given how the layer below was matched.
 
-    `truth` must already be expressed in our coordinates of the layer below (see main).  Returns (worst relative error,
-    number of rows whose sign is wrong, the true row index of each of our rows, the scale of each of our rows)."""
+    `truth` must already be expressed in our coordinates of the layer below (see main).  Weights the clustering set to 0
+    (exactly 0.0: inputs that were off at every dual, filled in by refine) are left out of the comparison.  Returns
+    (worst relative error, number of rows whose sign is wrong, the true row index of each of our rows, the scale of each
+    of our rows)."""
     n = len(ours)
-    cos = (ours / np.linalg.norm(ours, axis=1, keepdims=True)) @ (truth / np.linalg.norm(truth, axis=1, keepdims=True)).T
+    cos = np.zeros((n, len(truth)))
+    known = []
+    for i in range(n):
+        known.append(np.r_[ours[i, :-1] != 0, True])
+        t = truth * known[i]
+        cos[i] = (t @ ours[i]) / (np.linalg.norm(t, axis=1) * np.linalg.norm(ours[i]))
     which = np.argmax(np.abs(cos), axis=1)
     assert sorted(which) == list(range(n)), "our rows do not match the true neurons one to one"
     scales = np.zeros(n)
     errors = np.zeros(n)
     for i, j in enumerate(which):
-        scales[i] = np.linalg.norm(ours[i]) / np.linalg.norm(truth[j]) * np.sign(cos[i, j])
-        errors[i] = np.linalg.norm(ours[i] / scales[i] - truth[j]) / np.linalg.norm(truth[j])
+        t = truth[j] * known[i]
+        scales[i] = np.linalg.norm(ours[i]) / np.linalg.norm(t) * np.sign(cos[i, j])
+        errors[i] = np.linalg.norm(ours[i] / scales[i] - t) / np.linalg.norm(t)
     return errors.max(), int((scales < 0).sum()), which, np.abs(scales)
 
 
@@ -66,7 +74,7 @@ def layer_error(L, ours, prefix):
         _, _, which, scales = match_layer(layer, comparable)
     comparable = truth[L] if L == 0 else truth_in_our_coordinates(truth[L], which, scales)
     error, wrong_signs, which, _ = match_layer(ours, comparable)
-    matched = comparable[which]
+    matched = comparable[which] * np.c_[ours[:, :-1] != 0, np.ones(len(ours), bool)]     # weights still 0: left out
     scale = np.linalg.norm(ours, axis=1) / np.linalg.norm(matched, axis=1) * np.sign((ours * matched).sum(axis=1))
     return error, float(np.abs(ours / scale[:, None] - matched).max()), wrong_signs
 

@@ -17,6 +17,8 @@ multiprocessing.set_start_method('spawn', force=True)
 
 BASE_SEED = 10000
 MIN_CLUSTER = 3
+MIN_CLUSTER_ZEROED = 12    # a cluster whose solution sets weights to 0 must grow to this many duals before it counts
+IDENTITY_MAX = 1e-8        # a hyperplane that moves off its duals by less than this (relative) holds everywhere (prefix_identity)
 FILES_AT_START = 5         # dual files loaded up front; one more per 1000 seeds tried
 
 # set in every worker by init_worker
@@ -126,6 +128,10 @@ def process_single_candidate(args):
                 if S[-1] > 1e-7 * S[0]:
                     logging.info(f"[W{worker_id}] Invalid cluster")
                     break
+                if np.any(soln == 0) and len(maybe) < MIN_CLUSTER_ZEROED:
+                    # weights set to 0 leave few unknowns: a few duals of different neurons fit them by accident
+                    last_try_size = MIN_CLUSTER_ZEROED
+                    continue
                 
                 biases = []
                 for m in maybe:
@@ -134,8 +140,12 @@ def process_single_candidate(args):
                 med_bias = np.median(biases)
                 
                 if np.all(np.abs(biases - med_bias) < 1e-4):
+                    result = {"cluster": maybe, "weight": soln, "bias": -med_bias}
+                    if prefix_identity(result, prefix):
+                        logging.info(f"[W{worker_id}] Cluster {cluster_id} rejected: its hyperplane holds off the duals too")
+                        break
                     logging.info(f"[W{worker_id}] Found good cluster {cluster_id} of size {len(maybe)}")
-                    return {"cluster": maybe, "weight": soln, "bias": -med_bias}
+                    return result
                 else:
                     logging.info(f"[W{worker_id}] Wrong bias. This is very weird.")
                     break
@@ -143,6 +153,27 @@ def process_single_candidate(args):
                 last_try_size *= 2
     
     return None
+
+
+def prefix_identity(result, prefix, directions=4):
+    """Whether the cluster's hyperplane holds around its duals in every direction, not only on them.
+
+    Where the earlier-layer outputs that are on depend on fewer neurons further down than there are of them, they
+    satisfy an exact linear relation everywhere in those regions.  Duals of any neurons there fit that relation exactly
+    and with a common bias, so they pass as a cluster (most easily with weights set to 0, which leave few unknowns); a
+    real neuron's hyperplane is left as soon as a point moves off it.  Every move keeps the dual's own on/off pattern
+    (forward_around), so its size does not matter."""
+    w = result["weight"]
+    rng = np.random.default_rng(0)
+    for d in result["cluster"]:
+        x0 = np.asarray(d[1], dtype=np.float64)
+        x = np.vstack([x0, x0 + rng.standard_normal((directions, x0.size))])
+        h = prefix.forward_around(torch.tensor(x).to(DEVICE)).cpu().numpy()
+        moved = h[1:] - h[0]
+        size = np.linalg.norm(moved, axis=1) * np.linalg.norm(w)
+        if np.any(np.abs(moved @ w) > IDENTITY_MAX * size):
+            return False
+    return True
 
 
 def is_duplicate(found_clusters, result):

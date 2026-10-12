@@ -5,7 +5,7 @@ import numpy as np
 import scipy.linalg
 import torch
 import torch.nn as nn
-from utils import IDIM, DEVICE, MathIsHard, norm
+from utils import IDIM, DEVICE, MathIsHard
 
 def intersect(left, right, nleft, nright):
     A = np.vstack((nleft, nright))
@@ -110,8 +110,8 @@ def is_consistent_help(points, prefix, layer=0, do_return_soln=False, allow_clos
         hits = hiddens.sum(0)
         order = np.argsort(hits)
 
-        if np.min(hits) == 0 and layer > 0:
-            return rejected
+        # An earlier-layer neuron that is off at every point leaves its weight undetermined: it is solved without that
+        # column and comes back as exactly 0 (refine.complete_row finds it later, from points where that neuron is on).
         points_subset = []
         hits = np.zeros(prefix.out_dim)
         
@@ -159,13 +159,11 @@ def is_consistent_help(points, prefix, layer=0, do_return_soln=False, allow_clos
     centered_samples = samples - mean_point
 
     if do_return_soln:
-        U, S, Vt = np.linalg.svd(centered_samples)
-
-        ans = Vt[-1]
-        ans = norm(ans)
-        
-
-        return S, Vt[-1]
+        free = np.sum(np.abs(samples), 0) >= 1e-5      # columns that are zero at every sample have no say in the solution
+        U, S, Vt = np.linalg.svd(centered_samples[:, free])
+        soln = np.zeros(samples.shape[1])
+        soln[free] = Vt[-1]
+        return S, soln
 
     tt = torch.tensor(centered_samples).double()
     S = torch.linalg.svdvals(tt).cpu().numpy()

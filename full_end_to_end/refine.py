@@ -17,6 +17,7 @@ COLLINEAR = 256
 MIN_TANGENT = 0.1
 NO_BEND = 1e-6
 SECOND_KINK_STATIONS = 8
+AGREE = 2                   # complete_row: equations beyond the unknowns that must agree exactly
 
 
 def extra_points(n_unknowns):
@@ -239,6 +240,180 @@ def two_line(x_B, nu, d, e, reach_t):
     return (s_star, t_star, abs(bend), resid), None
 
 
+def along(prefix, rows, j, x, u):
+    """How far x may move along u before a prefix unit or another neuron of this layer (as we have it) changes state."""
+    h, A, c, _ = prefix_forward(prefix, x)
+    z = rows[:, :-1] @ h + rows[:, -1]
+    rate = rows[:, :-1] @ (A @ u)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        t = -z / rate
+    t[j] = np.inf
+    ahead = t[(t > 0) & np.isfinite(t)]
+    return min(ray_to_border(prefix, x, u), float(ahead.min()) if len(ahead) else np.inf)
+
+
+def far_kink(prefix, rows, j, x_B, nu, d, e):
+    """The kink of the decision boundary nearest to x_B along the line x_B + s nu, |s| up to the next hyperplane we know of.
+
+    x_B is a decision boundary point; the boundary is followed through stations p = x_B + s nu (its offset t along d at
+    each), which lie on one line t = alpha + beta s until s crosses a hyperplane of the network.  Marching out by doubling
+    steps finds the first station off the line; three stations beyond it give the line on the other side, and the two
+    lines meet at the kink.  Both directions are marched together, so the kink returned is (within a factor 2 in
+    distance) the nearest one.  Returns (x_star, bend) or (None, why)."""
+    base = []
+    for s in (-e, 0.0, e):
+        t_guess, width = predict_station(base, s, e)
+        t = measure_station(x_B + s * nu, d, t_guess, width, 4 * e)
+        if t is None:
+            return None, "no boundary at station"
+        base.append((s, t))
+    alpha0, beta0, resid0, _ = fit_line(base)
+    scale = max(1.0, float(np.max(np.abs(x_B))))
+    if resid0 > COLLINEAR * EPS * scale * (1 + abs(beta0)):
+        return None, "kink next to the start"
+    # Both ways at once, doubling the step: the first station off the line is (within a factor 2) the nearest kink.
+    off = lambda s: COLLINEAR * EPS * scale * (1 + abs(beta0)) * (1 + abs(s) / e)
+    reach = {+1.0: 0.9 * along(prefix, rows, j, x_B, nu), -1.0: 0.9 * along(prefix, rows, j, x_B, -nu)}
+    step = 2 * e
+    while reach:
+        for direction in list(reach):
+            s, s_prev = direction * step, direction * step / 2
+            if step + 3 * e >= reach[direction]:
+                del reach[direction]
+                continue
+            t = measure_station(x_B + s * nu, d, alpha0 + beta0 * s, e / 4, max(4 * e, step))
+            if t is None:
+                del reach[direction]
+                continue
+            if abs(t - (alpha0 + beta0 * s)) <= off(s):
+                continue
+            far = [(s, t)]
+            for k in (1, 2):
+                s_k = s + direction * k * e
+                t_guess, width = predict_station(far, s_k, e)
+                t_k = measure_station(x_B + s_k * nu, d, t_guess, width, max(4 * e, step))
+                if t_k is None:
+                    return None, "no boundary beyond the kink"
+                far.append((s_k, t_k))
+            alpha1, beta1, resid1, _ = fit_line(far)
+            if resid1 > off(s):
+                return None, "second kink beyond the first"
+            bend = beta1 - beta0
+            s_star = (alpha0 - alpha1) / bend
+            if not min(s_prev, s) <= s_star <= max(s_prev, s):
+                return None, "lines meet outside the bracket"
+            t_star = alpha0 + beta0 * s_star
+            return x_B + s_star * nu + t_star * d, abs(bend)
+        step *= 2
+    return None, "no kink in reach"
+
+
+def on_known_hyperplane(prefix, rows, j, x):
+    """Whether x lies (to round-off) on the hyperplane of a prefix unit or of another neuron of this layer."""
+    h, A, c, piece = prefix_forward(prefix, x)
+    z = rows[:, :-1] @ h + rows[:, -1]
+    dist = np.abs(z) / np.maximum(np.linalg.norm(rows[:, :-1] @ A, axis=1), 1e-300)
+    dist[j] = np.inf
+    return min(piece, float(dist.min())) < 1e-9 * max(1.0, float(np.max(np.abs(x))))
+
+
+def consensus(E, y, rng, tries=200):
+    """The solution a of E a = y that the most equations agree with exactly (to round-off), and which ones do.
+
+    The kinks far_kink finds lie exactly on some hyperplane of the network, but often not on the neuron's own (a deeper
+    neuron's, say): those equations are off by an arbitrary amount, the right ones agree to round-off.  Each try solves
+    a minimal set of equations and counts the rest that agree."""
+    m = E.shape[1]
+    tol = 1e-9 * max(1.0, float(np.max(np.abs(y))))
+    best = np.zeros(len(E), bool)
+    for _ in range(tries):
+        subset = rng.choice(len(E), m, replace=False)
+        try:
+            a = np.linalg.solve(E[subset], y[subset])
+        except np.linalg.LinAlgError:
+            continue
+        agree = np.abs(E @ a - y) <= tol * (1 + np.linalg.norm(a))
+        if agree.sum() > best.sum():
+            best = agree
+    if not best.any():
+        return None, best
+    return np.linalg.lstsq(E[best], y[best], rcond=None)[0], best
+
+
+def complete_row(prefix, rows, j, rng, radii, e, max_tries=30000):
+    """Find the weights of row j that the clustering set to 0 (inputs that were off at every dual of the neuron).
+
+    Our row is the neuron's own wherever those inputs are off; where some are on, the neuron's hyperplane is somewhere
+    else, at an unknown distance.  From decision boundary points on our hyperplane where some of them are on, far_kink
+    finds where the boundary really bends: a point x* on some hyperplane.  If it is the neuron's own, row . [h(x*), 1] +
+    sum over the missing inputs k of a_k h_k(x*) = 0, one linear equation in the missing weights a_k.  Kinks on a
+    hyperplane we know (a prefix unit, another neuron of this layer) are dropped; those of deeper neurons are not
+    recognisable one by one, so equations are collected until AGREE more than the unknowns agree exactly (consensus).
+    Returns (row, stats, the prefix activations at the agreeing kinks); row is None if the missing weights could not be
+    pinned down."""
+    row = rows[j].copy()
+    missing = np.flatnonzero(row[:-1] == 0)
+    need = len(missing) + AGREE
+    eqs, rhs, kinks = [], [], []
+    rejected = {}
+    tried = 0
+    dim = input_dim(prefix, rows)
+    a, agree = None, np.zeros(0, bool)
+
+    def reject(why):
+        rejected[why] = rejected.get(why, 0) + 1
+
+    while agree.sum() < need and tried < max_tries:
+        tried += 1
+        radius = radii[tried % len(radii)]
+        projected = project(prefix, rows, j, rng.normal(size=dim) * radius)
+        if projected is None:
+            reject("projection failed")
+            continue
+        if not np.any(prefix_forward(prefix, projected[0])[0][missing] > 0):
+            reject("missing inputs all off at the start")         # no queries spent yet
+            continue
+        found = boundary_in_plane(prefix, rows, j, projected[0], projected[1], rng, reach=4.0 * radius)
+        if found is None:
+            reject("no boundary in reach")
+            continue
+        x_B, d = found
+        projected = project(prefix, rows, j, x_B)
+        if projected is None or not np.array_equal(pattern(prefix, projected[0]), pattern(prefix, x_B)):
+            reject("boundary point off the piece")
+            continue
+        x_B, nu = projected[:2]
+        if not np.any(prefix_forward(prefix, x_B)[0][missing] > 0):
+            reject("missing inputs all off")
+            continue
+        x_star, why = far_kink(prefix, rows, j, x_B, nu, d, e)
+        if x_star is None:
+            reject(why)
+            continue
+        if on_known_hyperplane(prefix, rows, j, x_star):
+            reject("kink on a known hyperplane")
+            continue
+        h = prefix_forward(prefix, x_star)[0]
+        if not np.any(h[missing] > 0):
+            reject("missing inputs off at the kink")
+            continue
+        eqs.append(h[missing])
+        rhs.append(-(row[:-1] @ h + row[-1]))
+        kinks.append(h)
+        if len(eqs) >= need:
+            a, agree = consensus(np.array(eqs), np.array(rhs), rng)
+
+    info = dict(tried=tried, rejected=rejected, equations=len(eqs), agreeing=int(agree.sum()), missing=missing.tolist())
+    if agree.sum() < need:
+        return None, info, None
+    S = np.linalg.svd(np.array(eqs)[agree], compute_uv=False)
+    info["weights"] = a.tolist()
+    if S[-1] < BAD_RANK * S[0]:
+        return None, info, None
+    row[missing] = a
+    return row / np.linalg.norm(row[:-1]), info, np.array(kinks)[agree]
+
+
 def input_dim(prefix, rows):
     """The network's input dimension: the width of the first prefix layer's rows, or of our rows when there is no prefix."""
     return (prefix[0] if len(prefix) else rows).shape[1] - 1
@@ -354,7 +529,18 @@ def best_subset_residuals(M, keep):
 def fit_row(H, bends, old):
     """[row | bias] = null vector of [H | 1], rows weighted by bend, after trimming outliers (see the trim_* helpers).
 
-    Returns (row scaled to unit norm and oriented like `old`, label-free fit statistics)."""
+    Returns (row scaled to unit norm and oriented like `old`, label-free fit statistics).
+
+    A prefix unit that is off at every kink leaves its weight undetermined: the fit leaves it out and keeps the weight
+    `old` has (for a weight the clustering set to 0, the one complete_row found)."""
+    old = np.asarray(old, dtype=np.float64)
+    seen = np.r_[np.any(H != 0, axis=0), True]
+    if not seen.all():
+        v, stats = fit_row(H[:, seen[:-1]], bends, old[seen])
+        full = old * (v @ old[seen]) / (old[seen] @ old[seen])          # old, at the scale of the fitted part
+        full[seen] = v
+        stats["kept_weights"] = np.flatnonzero(~seen[:-1]).tolist()
+        return full / np.linalg.norm(full[:-1]), stats
     M = np.concatenate([H, np.ones((len(H), 1))], axis=1)
     weights = np.minimum(np.asarray(bends), 1.0)
     minimum = extra_points(M.shape[1])
@@ -395,18 +581,37 @@ def refine_neuron(args):
     queries_before = query_count()
     t0 = time.time()
     rng = np.random.default_rng([seed, j])
-    H, bends, info = mint_kinks(prefix, rows, j, K, rng, radii, e, max_tries=40 * K)
-    info["kinks"] = len(H)
 
     def finish(stats):
         stats["queries"] = query_count() - queries_before
         stats["seconds"] = round(time.time() - t0, 2)
         return stats
 
+    completed = anchors = None
+    if len(prefix) and np.any(rows[j, :-1] == 0):
+        # weights the clustering set to 0: find them first, so that the kinks below may fall where those inputs are on
+        row, completed, anchors = complete_row(prefix, rows, j, rng, radii, e)
+        if row is None:
+            return j, rows[j], finish(dict(tried=0, kinks=0, rejected={}, kept_old=True, completed=completed))
+        rows = rows.copy()
+        rows[j] = row
+    H, bends, info = mint_kinks(prefix, rows, j, K, rng, radii, e, max_tries=40 * K)
+    info["kinks"] = len(H)
+    if completed is not None:
+        info["completed"] = completed
+
     if len(H) < extra_points(rows.shape[1]):
         info["kept_old"] = True
         return j, rows[j], finish(info)
     v, fit = fit_row(H, bends, rows[j])
+    kept = [k for k in fit.get("kept_weights", []) if anchors is not None and np.all(anchors[:, k] > 0)]
+    if kept:
+        # no kink had these inputs on, so fit_row kept complete_row's weights, which were found against the unrefined
+        # row: solve them again from complete_row's kinks (which lie on the neuron's hyperplane), now behind the fitted rest
+        rest = np.setdiff1d(np.arange(len(v) - 1), kept)
+        v[kept] = np.linalg.lstsq(anchors[:, kept], -(anchors[:, rest] @ v[rest] + v[-1]), rcond=None)[0]
+        v = v / np.linalg.norm(v[:-1])
+        fit["resolved_weights"] = kept
     stats = dict(info, **fit)
     stats["moved"] = float(np.linalg.norm(v - rows[j]))
     stats = finish(stats)
