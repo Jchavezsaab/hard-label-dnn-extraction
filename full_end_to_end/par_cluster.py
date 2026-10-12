@@ -19,6 +19,9 @@ BASE_SEED = 10000
 MIN_CLUSTER = 3
 MIN_CLUSTER_ZEROED = 12    # a cluster whose solution sets weights to 0 must grow to this many duals before it counts
 SPLIT_MIN = 0.25           # a cluster split by fewer than this fraction of the others' hyperplanes is a deeper neuron (disguised)
+PRUNE_SIZES = (4, 6)       # a cluster whose members have no common hyperplane: subsets of these sizes are tried (prune)
+PRUNE_TRIALS = 40          #   this many of each size
+PRUNES_MAX = 3             #   at most this many times per seed
 IDENTITY_MAX = 1e-8        # a hyperplane that moves off its duals by less than this (relative) holds everywhere (prefix_identity)
 FILES_AT_START = 5         # dual files loaded up front; one more per 1000 seeds tried
 
@@ -93,6 +96,22 @@ def process_single_candidate(args):
     # Search for cluster members
     maybe = [a]
     last_try_size = MIN_CLUSTER
+    prunes = 0
+    rng = np.random.default_rng(cluster_id)
+
+    def prune_or_stop(why):
+        """The members fail together: keep the ones on the best hyperplane through the seed and grow on, or give up."""
+        nonlocal maybe, prunes
+        logging.info(f"[W{worker_id}] {why}")
+        if prunes >= PRUNES_MAX:
+            return False
+        prunes += 1
+        kept = prune(a, maybe, prefix, layer, rng)
+        if kept is None:
+            return False
+        logging.info(f"[W{worker_id}] Pruned {cluster_id} from {len(maybe)} to {len(kept)} duals")
+        maybe = kept
+        return True
     
     logging.info(f"Going {dual_files}")
     for j, b in enumerate(load_dual_batch(dual_files, cluster_id * 100, random_seed, layer)):
@@ -127,7 +146,8 @@ def process_single_candidate(args):
             
             if type(S) == np.ndarray:
                 if S[-1] > 1e-7 * S[0]:
-                    logging.info(f"[W{worker_id}] Invalid cluster")
+                    if prune_or_stop("Invalid cluster"):
+                        continue
                     break
                 if np.any(soln == 0) and len(maybe) < MIN_CLUSTER_ZEROED:
                     # weights set to 0 leave few unknowns: a few duals of different neurons fit them by accident
@@ -148,12 +168,41 @@ def process_single_candidate(args):
                     logging.info(f"[W{worker_id}] Found good cluster {cluster_id} of size {len(maybe)}")
                     return result
                 else:
-                    logging.info(f"[W{worker_id}] Wrong bias. This is very weird.")
+                    if prune_or_stop("Wrong bias"):
+                        continue
                     break
             else:
                 last_try_size *= 2
     
     return None
+
+
+def prune(a, maybe, prefix, layer, rng):
+    """The members of maybe that lie on the best hyperplane through the seed a, or None.
+
+    Deep in the network the pairwise test that grows a cluster lets duals of other neurons in (few earlier neurons are
+    on at a dual, so two duals have few coordinates to disagree on), and then the whole set has no common hyperplane.
+    Small random subsets with the seed are solved (PRUNE_TRIALS of each size in PRUNE_SIZES); a member lies on a subset's
+    hyperplane if its activation there gives the subset's bias (the same 1e-4 the full cluster is held to).  The
+    hyperplane most members lie on wins, if it is clean enough for a cluster itself."""
+    H = prefix.forward(torch.tensor(np.array([m[1] for m in maybe])).to(DEVICE)).cpu().numpy()
+    others = np.arange(1, len(maybe))
+    best = None
+    for size in PRUNE_SIZES:
+        if size > len(maybe):
+            break
+        for _ in range(PRUNE_TRIALS):
+            pick = np.r_[0, rng.choice(others, size - 1, replace=False)]
+            S, soln = is_consistent([maybe[i] for i in pick], prefix, layer=layer, do_return_soln=True)
+            if type(S) != np.ndarray or S[-1] > 1e-7 * S[0]:
+                continue
+            z = H @ soln
+            on = np.abs(z - np.median(z[pick])) < 1e-4
+            if on[0] and (best is None or on.sum() > best.sum()):
+                best = on
+    if best is None or best.sum() < MIN_CLUSTER:
+        return None
+    return [m for m, keep in zip(maybe, best) if keep]
 
 
 def prefix_identity(result, prefix, directions=4):
@@ -236,6 +285,12 @@ def cluster_layer(layer, duals_dir, prefix_files, num_workers, width):
     next_seed = 0
     futures = {}
 
+    def drop_disguised():
+        for i in reversed(disguised(found_clusters, prefix)):
+            print("   dropped cluster of %d duals: on one side of most of the others' hyperplanes, a deeper neuron"
+                  % len(found_clusters[i]['cluster']), flush=True)
+            rejected.append(found_clusters.pop(i))
+
     def submit(executor):
         nonlocal next_seed
         while len(futures) < max_active and next_seed < len(seeds):
@@ -255,10 +310,7 @@ def cluster_layer(layer, duals_dir, prefix_files, num_workers, width):
                 print("cluster %d of %d: %d duals" % (len(found_clusters), width, len(result['cluster'])), flush=True)
                 if len(found_clusters) == width:
                     # Checked once the layer looks complete: only then are the other clusters' hyperplanes all there.
-                    for i in reversed(disguised(found_clusters, prefix)):
-                        print("   dropped cluster of %d duals: all in one on/off region of this layer, a deeper neuron"
-                              % len(found_clusters[i]['cluster']), flush=True)
-                        rejected.append(found_clusters.pop(i))
+                    drop_disguised()
                 if len(found_clusters) == width:
                     # Every neuron of the layer is accounted for: the remaining seeds can only be duals of deeper layers.
                     for future in futures:
@@ -269,6 +321,9 @@ def cluster_layer(layer, duals_dir, prefix_files, num_workers, width):
                 seeds.extend(load_seeds(dual_files[files_loaded]))
                 files_loaded += 1
             submit(executor)
+    if len(found_clusters) < width:
+        # the seeds ran out first (a neuron with no duals at all, say): the layer never looked complete, check it now
+        drop_disguised()
     if rejected:
         print("   %d clusters dropped as deeper neurons" % len(rejected), flush=True)
     return found_clusters
