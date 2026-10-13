@@ -30,6 +30,7 @@ FACE_PLANE_TOL = 1e-5      # a dual lies on a face if its activation gives the f
 FACES_MAX = 3              # a seed gives up after this many faces
 IDENTITY_MAX = 1e-8        # a hyperplane that moves off its duals by less than this (relative) holds everywhere (prefix_identity)
 IDENTITY_SHARE = 0.25      # ... and a cluster with this share of such identity duals is rejected (prefix_identity)
+ENGAGED_MIN = 1e-3         # a row with less of its weight than this on the inputs on at one of its duals is rejected
 SAME_ROW = 1 - 1e-6        # a cluster this parallel to a rejected one is the same hyperplane again (cluster_layer)
 SECOND_PASS_ID = 10 ** 6   # cluster ids (and so seeds of the random draws) of the second pass start here
 SAME_NORMAL = 1 - 1e-6     # two duals whose boundary normals are this parallel are the same bend (not added twice)
@@ -215,6 +216,9 @@ def process_single_candidate(args):
                     if prefix_identity(result, prefix):
                         logging.info(f"[W{worker_id}] Cluster {cluster_id} rejected: its hyperplane holds off the duals too")
                         break
+                    if disengaged(result, prefix):
+                        logging.info(f"[W{worker_id}] Cluster {cluster_id} rejected: it weighs only inputs that are off")
+                        break
                     logging.info(f"[W{worker_id}] Found good cluster {cluster_id} of size {len(maybe)}")
                     return result
                 else:
@@ -303,6 +307,16 @@ def prefix_identity(result, prefix, directions=4):
         size = np.linalg.norm(moved, axis=1) * np.linalg.norm(w)
         identity += not np.any(np.abs(moved @ w) > IDENTITY_MAX * size)
     return identity >= IDENTITY_SHARE * len(result["cluster"])
+
+
+def disengaged(result, prefix):
+    """Whether the cluster's row puts next to none of its weight on the inputs that are on at one of its duals.
+
+    w . h + b = 0 holds trivially wherever every input the row weighs is off (and its bias is ~0): such a row fits the
+    duals of any neurons there.  A real neuron is zero at its own duals through its weights on the inputs that are on."""
+    w = result["weight"] / np.linalg.norm(result["weight"])
+    H = prefix.forward(torch.tensor(np.array([d[1] for d in result["cluster"]])).to(DEVICE)).cpu().numpy()
+    return bool(np.any(np.sqrt(((H > 1e-4) * w ** 2).sum(axis=1)) < ENGAGED_MIN))
 
 
 def is_duplicate(found_clusters, result, cos=0.8):
