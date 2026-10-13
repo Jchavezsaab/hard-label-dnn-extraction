@@ -14,6 +14,7 @@ import numpy as np
 
 
 CONFIDENT = -3.6889       # log of the chance that the majority is wrong at which the vote stops: exp(-3.6889) = 2.5%
+STORED_ENOUGH = 50        # a neuron with this many stored experiments gets no new dual points (recoverSign)
 DUAL_FAILURES_MAX = 1000  # dual-point attempts in a row that may fail before findDualPoints gives up
 
 
@@ -296,6 +297,29 @@ def analyzeDualPoint(f, weights, biases, x0, layerId, neuronId, eps, tol):
     result['right'] = bool(result['cosON'] > result['cosOFF'])
     return result
 
+def analyzeStoredDual(weights, biases, dual, layerId, neuronId):
+    """The experiment of analyzeDualPoint at a dual point the walk found, with the decision boundary's normals the walk
+    measured on either side of the bend: no queries.
+
+    dual = (point before, x0, point after, normal before, normal after), x0 on neuron neuronId's hyperplane.  The point
+    before and the point after lie in the boundary pieces on either side of it; the side where our row is positive is
+    'ON'.  A dual whose two points are on the same side of the hyperplane says nothing and raises."""
+    before, x0, after, n_before, n_after = (np.asarray(v, dtype=np.float64).flatten() for v in dual)
+    z_before = getHiddenVector(weights, biases, layerId, before)[neuronId]
+    z_after = getHiddenVector(weights, biases, layerId, after)[neuronId]
+    if np.sign(z_before) == np.sign(z_after):
+        raise ExperimentException("analyzeStoredDual: both measuring points on one side of the hyperplane.")
+    M, b = getLocalMatrixAndBias(weights[:layerId], biases[:layerId], x0)
+    e_j = np.zeros(M.shape[1])
+    e_j[neuronId] = 1
+    v = e_j @ np.linalg.pinv(M)
+    m_on, m_off = (n_before, n_after) if z_before > 0 else (n_after, n_before)
+    result = {'M': M, 'z': x0 @ M + b, 'mON': m_on, 'mOFF': m_off, 'stored': True}
+    for side, m in (('ON', m_on), ('OFF', m_off)):
+        result['cos' + side] = abs(np.dot(m, v)) / (np.linalg.norm(m) * np.linalg.norm(v))
+    result['right'] = bool(result['cosON'] > result['cosOFF'])
+    return result
+
 def getConfidence(votes_m, votes_p): 
     # Check confidence
     if (votes_m==0) and (votes_p==0): 
@@ -306,12 +330,16 @@ def getConfidence(votes_m, votes_p):
     if np.isnan(logp): logp = 0.0
     return logp 
 
-def recoverSign(f, weights, biases, duals, layerId, neuronId, eps, tol, Nmin, Nmax, logFile=None, NfailMax=None):
+def recoverSign(f, weights, biases, duals, layerId, neuronId, eps, tol, Nmin, Nmax, logFile=None, NfailMax=None,
+                stored=()):
     """
     Recovers the sign of a single neuron given the weights and biases of previous layers and the current one up to signs.
-    duals is a generator that produces dual points (x - tol n, x, x + tol n) of the target neuron (None when it has run
-    out); each one is one experiment (analyzeDualPoint).  Stops when the vote is confident, after Nmax usable experiments, after NfailMax failed ones (default
-    Nmax), or when the dual points run out, whichever comes first.
+    stored: dual points the walk found on the neuron's hyperplane, with the normals it measured; each is an experiment
+    without queries (analyzeStoredDual), and they come first.  Then duals, a generator that produces new dual points
+    (x - tol n, x, x + tol n) of the target neuron (None when it has run out), each one an experiment (analyzeDualPoint)
+    -- only as many as the vote still needs, and none once STORED_ENOUGH stored experiments did not settle it.  Stops
+    when the vote is confident, after Nmax usable experiments, after NfailMax failed ones (default Nmax; stored duals
+    that say nothing do not count), or when the dual points run out, whichever comes first.
     """
     if NfailMax is None:
         NfailMax = Nmax
@@ -322,20 +350,39 @@ def recoverSign(f, weights, biases, duals, layerId, neuronId, eps, tol, Nmin, Nm
     votes_m = 0
     t0 = time.time()
 
-    results=[]
-    for dual_point_id,x_dual in enumerate(duals, start=1):
+    def candidates():
+        for dual in stored:
+            yield dual, True
+        if N >= Nmin and getConfidence(votes_m, votes_p) < CONFIDENT:
+            return                                  # the free experiments were enough: no new dual points
+        if N >= STORED_ENOUGH:
+            # many free experiments and still no confident majority: the experiment is biased for this neuron, not
+            # short of data, and more of it will not help (the re-votes in run.py are what fix that)
+            return
+        for dual in duals:
+            yield dual, False
 
-        if x_dual is None:
+    results=[]
+    for dual_point_id, (x_dual, is_stored) in enumerate(candidates(), start=1):
+
+        if is_stored:
+            try:
+                result = analyzeStoredDual(weights, biases, x_dual, layerId, neuronId)
+            except ExperimentException:
+                continue
+        elif x_dual is None:
             print(f"L {layerId}, N {neuronId}: Experiments {N}/{NN}, votes+ {votes_p}, votes- {votes_m}, confidence {getConfidence(votes_m, votes_p)}", file=logFile)
             print("Warning: Ran out of dual points.", file=logFile)
             break
-        _, x0, _ = x_dual
         if NN % 1 == 0:
             print(f"L {layerId}, N {neuronId}: Experiments {N}/{NN}, votes+ {votes_p}, votes- {votes_m}, confidence {getConfidence(votes_m, votes_p)}", file=logFile)
         NN += 1
         try:
             t1 = time.time()
-            result = analyzeDualPoint(f, weights, biases, x0, layerId, neuronId, eps=eps, tol=tol)
+            if not is_stored:
+                _, x0, _ = x_dual
+                result = analyzeDualPoint(f, weights, biases, x0, layerId, neuronId, eps=eps, tol=tol)
+                result['stored'] = False
             result['dual_point_id'] = dual_point_id
             if result['right']:
                 votes_p += 1
@@ -348,7 +395,8 @@ def recoverSign(f, weights, biases, duals, layerId, neuronId, eps, tol, Nmin, Nm
             result['total_execution_time'] = time.time()-t0
             result['logp'] = logp
             results.append(result)
-            if (logp < CONFIDENT and N >= Nmin) or (N >= Nmax):
+            # stored experiments are free: all of them are used (the second pass in run.py re-votes them)
+            if (logp < CONFIDENT and N >= Nmin and not is_stored) or (N >= Nmax):
                 print(f"Stopping after {N} experiments with confidence {logp:.2f} (votes+ {votes_p}, votes- {votes_m})", file=logFile)
                 break
         except ExperimentException as e:
@@ -384,15 +432,17 @@ def reassess(results, neuronId, estimates, Nmin=20):
     return 1 if votes_right > votes_wrong else -1, confident, len(results)
 
 
-def recover_neuron_sign(f, weights, biases, layerId, neuronId, Nmin=20, Nmax=1000, logFile=None):
+def recover_neuron_sign(f, weights, biases, layerId, neuronId, Nmin=20, Nmax=1000, logFile=None, stored=()):
     """(+1 if the guessed sign of neuron neuronId of layer layerId (1-based) is right, -1 if it must be flipped,
     whether the vote reached the confidence CONFIDENT, the experiments).
 
     A vote that stopped early (out of dual points or of usable experiments) still decides by majority, but is reported
-    as not confident; with no votes at all, or a tie, there is nothing to decide and it raises."""
+    as not confident; with no votes at all, or a tie, there is nothing to decide and it raises.  stored: dual points
+    of the walk on the neuron's hyperplane, used first (see recoverSign)."""
     shape = (weights[0].shape[0],)
     duals = findDualPoints(f, weights, biases, layerId, neuronId, shape, 1e-14, 1e3)
-    results = recoverSign(f, weights, biases, duals, layerId, neuronId, 1e-5, 1e-14, Nmin, Nmax, logFile=logFile)
+    results = recoverSign(f, weights, biases, duals, layerId, neuronId, 1e-5, 1e-14, Nmin, Nmax, logFile=logFile,
+                          stored=stored)
     votes_right = sum(r['right'] for r in results)
     votes_wrong = len(results) - votes_right
     if votes_right == votes_wrong:

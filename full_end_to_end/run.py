@@ -53,6 +53,8 @@ WALKS = 32                              # neurons that are almost always on get 
 WALK_PATHS = 45
 KINKS = 64
 VOTES_MIN, VOTES_MAX = 20, 1000
+SIGN_PASSES_MAX = 6                     # sign passes at most (the first votes, the others re-vote: recover_signs)
+STORED_DIST = 1e-6                      # a walk dual within this distance of a row's hyperplane is a dual of that row (signs)
 HEAD_SEGMENTS, HEAD_HALVINGS = 2000, 50
 
 for var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
@@ -209,10 +211,45 @@ def refine_rows(L, rows):
     return refined
 
 
+def stored_duals(L, refined):
+    """For every row of layer L, the walk's dual points that lie on its hyperplane (within STORED_DIST in input space),
+    at most VOTES_MAX each: they carry the decision boundary's normals on both sides, so they are sign experiments
+    without queries (signs.analyzeStoredDual).  Duals on a hyperplane of the layers below are left out."""
+    duals = []
+    for f in sorted(os.listdir(os.path.join(OUT, "duals"))):
+        duals.extend(pickle.load(open(os.path.join(OUT, "duals", f), "rb")))
+    prefix = [np.load(f) for f in prefix_files(L)]
+    h = np.array([d[1] for d in duals], dtype=np.float64)
+    usable = np.ones(len(duals), bool)
+    for rb in prefix:
+        z = h @ rb[:, :-1].T + rb[:, -1]
+        usable &= np.all(np.abs(z) >= 1e-5, axis=1)     # as par_cluster.reject_on_earlier_layer
+        h = np.maximum(z, 0)
+    z = h @ refined[:, :-1].T + refined[:, -1]            # (duals, rows)
+    stored = []
+    for j in range(len(refined)):
+        near = np.flatnonzero(usable & (np.abs(z[:, j]) < 1e-3))
+        mine = []
+        for i in near:
+            # input-space distance to row j's hyperplane, in the dual's own on/off pattern
+            x = np.asarray(duals[i][1], dtype=np.float64)
+            A = np.eye(len(x))
+            for rb in prefix:
+                pre = rb[:, :-1] @ x + rb[:, -1]
+                A = (rb[:, :-1] @ A) * (pre > 0)[:, None]
+                x = np.maximum(pre, 0)
+            if abs(z[i, j]) < STORED_DIST * np.linalg.norm(A.T @ refined[j, :-1]):
+                mine.append(duals[i])
+            if len(mine) >= VOTES_MAX:
+                break
+        stored.append(mine)
+    return stored
+
+
 def one_neuron_sign(job):
     import signs
 
-    L, neuron, refined = job
+    L, neuron, refined, stored = job
     np.random.seed(1000 * L + neuron)
     before = query_count()
     # The sign code wants keras-style layers, prefix first and the target layer last: weights (in, out), biases (out,).
@@ -220,18 +257,21 @@ def one_neuron_sign(job):
     weights = [rb[:, :-1].T.copy() for rb in layers]
     biases = [rb[:, -1].copy() for rb in layers]
     with open(os.path.join(OUT, "logs", "signs_layer%d_neuron%d.log" % (L, neuron)), "w") as log:
-        sign, confident, votes = signs.recover_neuron_sign(label, weights, biases, L + 1, neuron, VOTES_MIN, VOTES_MAX, log)
+        sign, confident, votes = signs.recover_neuron_sign(label, weights, biases, L + 1, neuron, VOTES_MIN, VOTES_MAX, log,
+                                                           stored=stored)
     experiments = [{key: r[key] for key in ('M', 'z', 'mON', 'mOFF')} for r in votes]     # for the second pass
-    return (sign, confident, len(votes), experiments), query_count() - before
+    from_walk = sum(r['stored'] for r in votes)
+    return (sign, confident, len(votes), experiments, from_walk), query_count() - before
 
 
 def recover_signs(L, refined):
     """Find the sign of every row; the result is the finished layer.
 
-    The first pass votes over every experiment.  The second pass makes no queries: with the first pass's signs telling
-    which target-layer neurons are active at each dual point, it computes every experiment's probe again so that it
-    leaves only those alone, and votes again with the normals the first pass measured (signs.reassess).  On a tie, the
-    first pass's sign stands."""
+    The first pass votes over every experiment: first those at the walk's own dual points on the row's hyperplane, whose
+    normals the walk already measured (no queries, stored_duals), then new ones only if those were not enough.  Later
+    passes make no queries: with the previous pass's signs telling which target-layer neurons are active at each dual
+    point, they compute every experiment's probe again so that it leaves only those alone, and vote again with the
+    measured normals (signs.reassess), until no sign changes.  On a tie, the previous sign stands."""
     import signs
 
     if os.path.exists(layer_file(L)):
@@ -240,25 +280,33 @@ def recover_signs(L, refined):
     os.makedirs(os.path.join(OUT, "logs"), exist_ok=True)
 
     def progress(finished, job, result):
-        _, neuron, _ = job
-        sign, confident, votes, _ = result
-        print("sign %d of %d: neuron %d %s after %d votes%s" % (finished, WIDTHS[L], neuron, "kept" if sign > 0 else "flipped",
-              votes, "" if confident else " (majority without confidence)"), flush=True)
+        _, neuron, _, _ = job
+        sign, confident, votes, _, from_walk = result
+        print("sign %d of %d: neuron %d %s after %d votes (%d from the walk)%s" % (finished, len(refined), neuron,
+              "kept" if sign > 0 else "flipped", votes, from_walk, "" if confident else " (majority without confidence)"),
+              flush=True)
 
-    outcomes, queries = parallel(one_neuron_sign, [(L, j, refined) for j in range(WIDTHS[L])], progress)
-    first = np.array([sign for sign, _, _, _ in outcomes])
+    stored = stored_duals(L, refined)
+    print("   layer %d: walk duals on each row's hyperplane: %s" % (L, [len(s) for s in stored]), flush=True)
+    outcomes, queries = parallel(one_neuron_sign, [(L, j, refined, stored[j]) for j in range(len(refined))], progress)
+    first = np.array([sign for sign, _, _, _, _ in outcomes])
     row_signs = first.copy()
-    confident = [c for _, c, _, _ in outcomes]
-    for j, (_, _, votes, experiments) in enumerate(outcomes):
-        sign, sure, _ = signs.reassess(experiments, j, first, VOTES_MIN)
-        print("   second pass: neuron %d (%d experiments): %s" % (j, votes,
-              "tie, first pass stands" if sign is None else "%s%s" % ("kept" if sign > 0 else "flipped",
-              "" if sure else " (majority without confidence)")), flush=True)
-        if sign is not None:
-            row_signs[j] = sign
-            confident[j] = sure
+    confident = [c for _, c, _, _, _ in outcomes]
+    # Later passes re-vote every experiment with the previous pass's signs (no queries), until no sign changes: a wrong
+    # estimate of one neuron misleads the probes of the others, so fixing one can fix the next.
+    for sign_pass in range(2, SIGN_PASSES_MAX + 1):
+        estimates = row_signs.copy()
+        for j, (_, _, votes, experiments, _) in enumerate(outcomes):
+            sign, sure, _ = signs.reassess(experiments, j, estimates, VOTES_MIN)
+            if sign is not None:
+                row_signs[j] = sign
+                confident[j] = sure
+        flips = np.flatnonzero(row_signs != estimates).tolist()
+        print("   pass %d: changed the signs of neurons %s" % (sign_pass, flips), flush=True)
+        if not flips:
+            break
     changed = np.flatnonzero(row_signs != first).tolist()
-    print("   layer %d: the second pass changed the signs of neurons %s" % (L, changed), flush=True)
+    print("   layer %d: the later passes changed the signs of neurons %s" % (L, changed), flush=True)
     unsure = [j for j, sure in enumerate(confident) if not sure]
     if unsure:
         # out of dual points / usable experiments before the vote was confident: the majority is used anyway
