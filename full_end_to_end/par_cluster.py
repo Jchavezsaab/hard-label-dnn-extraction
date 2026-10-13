@@ -6,6 +6,7 @@ import logging
 import os
 import pickle
 import random
+import tempfile
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import multiprocessing
 import numpy as np
@@ -17,22 +18,37 @@ multiprocessing.set_start_method('spawn', force=True)
 
 BASE_SEED = 10000
 MIN_CLUSTER = 3
-MIN_CLUSTER_ZEROED = 12    # a cluster whose solution sets weights to 0 must grow to this many duals before it counts
+MIN_CLUSTER_ZEROED = 8    # a cluster whose solution sets weights to 0 must grow to this many duals before it counts
 SPLIT_MIN = 0.25           # a cluster split by fewer than this fraction of the others' hyperplanes is a deeper neuron (disguised)
 PRUNE_SIZES = (4, 6)       # a cluster whose members have no common hyperplane: subsets of these sizes are tried (prune)
 PRUNE_TRIALS = 40          #   this many of each size
 PRUNES_MAX = 3             #   at most this many times per seed
+PRUNE_TOL = 1e-5           #   a member lies on a subset's hyperplane if its activation gives the bias to this
 FACE_TOL = 1e-6            # a row whose input normal is within this (1 - |cos|) of a boundary normal at a dual ...
 FACE_SHARE = 0.5           # ... at this share of its duals is a face of the decision boundary (is_face)
 FACE_PLANE_TOL = 1e-5      # a dual lies on a face if its activation gives the face's bias to this
 FACES_MAX = 3              # a seed gives up after this many faces
 IDENTITY_MAX = 1e-8        # a hyperplane that moves off its duals by less than this (relative) holds everywhere (prefix_identity)
+IDENTITY_SHARE = 0.25      # ... and a cluster with this share of such identity duals is rejected (prefix_identity)
+SAME_ROW = 1 - 1e-6        # a cluster this parallel to a rejected one is the same hyperplane again (cluster_layer)
+SECOND_PASS_ID = 10 ** 6   # cluster ids (and so seeds of the random draws) of the second pass start here
+SAME_NORMAL = 1 - 1e-6     # two duals whose boundary normals are this parallel are the same bend (not added twice)
 FILES_AT_START = 5         # dual files loaded up front; one more per 1000 seeds tried
 
 # set in every worker by init_worker
 _worker_prefix = None
 _worker_layer = None
 _duals_dir = None
+
+
+_rest = (None, None)      # (path, duals) of the leftover pool of the second pass, loaded once per worker
+
+
+def load_rest(path):
+    global _rest
+    if _rest[0] != path:
+        _rest = (path, pickle.load(open(path, "rb")))
+    return _rest[1]
 
 
 def init_worker(layer, prefix_files, duals_dir):
@@ -52,10 +68,11 @@ def reject_on_earlier_layer(x, prefix, layer):
 
 
 
-def load_dual_batch(dual_files, start_idx, random_seed, layer):
-    """Generator that yields every dual once, starting at a file offset derived
-    from start_idx (wrapping around so few files still get fully searched)"""
-    first = (start_idx // 10000) % len(dual_files)  # Rough estimate of duals per file
+def load_dual_batch(dual_files, start_idx, random_seed, layer, first=None):
+    """Generator that yields every dual once, starting at file `first` (by default a file offset derived from
+    start_idx), wrapping around so every file gets searched"""
+    if first is None:
+        first = (start_idx // 10000) % len(dual_files)  # Rough estimate of duals per file
     remaining = list(range(first, len(dual_files))) + list(range(first))
     current_file_duals = []
     dual_idx = 0
@@ -80,7 +97,15 @@ def load_dual_batch(dual_files, start_idx, random_seed, layer):
 
 def process_single_candidate(args):
     """Process a single candidate neuron to find a cluster"""
-    cluster_id, a, found_clusters, dual_files, random_seed, worker_id = args
+    cluster_id, a, found_clusters, dual_files, random_seed, worker_id = args[:6]
+    # args[6]: the index in dual_files of the seed's own walk, scanned first (a walk tends to cross a neuron's
+    # hyperplane several times in a row), or (path, i): second pass, the seed is duals[i] of the leftover pool in path,
+    # and only that pool is scanned, in full
+    home, pool = (args[6] if len(args) > 6 else None), None
+    if isinstance(home, tuple):
+        pool = load_rest(home[0])
+        a = pool[home[1]]
+        home = None
     
     # Use global prefix initialized in worker
     prefix = _worker_prefix
@@ -124,11 +149,12 @@ def process_single_candidate(args):
         return True
     
     logging.info(f"Going {dual_files}")
-    for j, b in enumerate(load_dual_batch(dual_files, cluster_id * 100, random_seed, layer)):
+    scan = pool if pool is not None else load_dual_batch(dual_files, cluster_id * 100, random_seed, layer, first=home)
+    for j, b in enumerate(scan):
         if b is a:
             logging.info(f"[W{worker_id}] Skip adding the same neuron twice")
             continue
-        if j - restart > 1000 and len(maybe) == 1:
+        if pool is None and j - restart > 1000 and len(maybe) == 1:
             logging.info(f"[W{worker_id}] Abort {cluster_id} because <1000")
             break
         if len(maybe)**2/(j - restart + 1) < .0001:
@@ -140,7 +166,9 @@ def process_single_candidate(args):
         if type(S) == np.float64 and S < 1e-5 and not any(on_face(b, face) for face in faces):
             an1, an2 = a[3:]          # the boundary normals on either side of each dual, stored by the walk
             bn1, bn2 = b[3:]
-            if an1 @ bn1 > .8 or an1 @ bn2 > .8 or an2 @ bn1 > .8 or an2 @ bn2 > .8:
+            # the same bend found twice; genuine pairs of one neuron can have boundary normals far closer than an
+            # intruder's (a neuron that hardly feeds the decision bends the boundary little), so only near 1
+            if max(abs(an1 @ bn1), abs(an1 @ bn2), abs(an2 @ bn1), abs(an2 @ bn2)) > SAME_NORMAL:
                 continue
             
             logging.info(f"[W{worker_id}] Added consistent neuron to {cluster_id} {j} {len(maybe)}")
@@ -233,7 +261,7 @@ def prune(a, maybe, prefix, layer, rng):
     Deep in the network the pairwise test that grows a cluster lets duals of other neurons in (few earlier neurons are
     on at a dual, so two duals have few coordinates to disagree on), and then the whole set has no common hyperplane.
     Small random subsets with the seed are solved (PRUNE_TRIALS of each size in PRUNE_SIZES); a member lies on a subset's
-    hyperplane if its activation there gives the subset's bias (the same 1e-4 the full cluster is held to).  The
+    hyperplane if its activation there gives the subset's bias to PRUNE_TOL (tighter than the full cluster's 1e-4).  The
     hyperplane most members lie on wins, if it is clean enough for a cluster itself."""
     H = prefix.forward(torch.tensor(np.array([m[1] for m in maybe])).to(DEVICE)).cpu().numpy()
     others = np.arange(1, len(maybe))
@@ -247,7 +275,7 @@ def prune(a, maybe, prefix, layer, rng):
             if type(S) != np.ndarray or S[-1] > 1e-7 * S[0]:
                 continue
             z = H @ soln
-            on = np.abs(z - np.median(z[pick])) < 1e-4
+            on = np.abs(z - np.median(z[pick])) < PRUNE_TOL
             if on[0] and (best is None or on.sum() > best.sum()):
                 best = on
     if best is None or best.sum() < MIN_CLUSTER:
@@ -256,34 +284,35 @@ def prune(a, maybe, prefix, layer, rng):
 
 
 def prefix_identity(result, prefix, directions=4):
-    """Whether the cluster's hyperplane holds around its duals in every direction, not only on them.
+    """Whether the cluster's hyperplane holds around many of its duals in every direction, not only on them.
 
     Where the earlier-layer outputs that are on depend on fewer neurons further down than there are of them, they
     satisfy an exact linear relation everywhere in those regions.  Duals of any neurons there fit that relation exactly
-    and with a common bias, so they pass as a cluster (most easily with weights set to 0, which leave few unknowns); a
-    real neuron's hyperplane is left as soon as a point moves off it.  Every move keeps the dual's own on/off pattern
-    (forward_around), so its size does not matter."""
+    and with a common bias, so they pass as a cluster (most easily with weights set to 0, which leave few unknowns),
+    and a few duals that fit it loosely can come along: a cluster is rejected once IDENTITY_SHARE of its duals are such
+    identity duals.  A real neuron's hyperplane is left as soon as a point moves off it, at every one of its duals.
+    Every move keeps the dual's own on/off pattern (forward_around), so its size does not matter."""
     w = result["weight"]
     rng = np.random.default_rng(0)
+    identity = 0
     for d in result["cluster"]:
         x0 = np.asarray(d[1], dtype=np.float64)
         x = np.vstack([x0, x0 + rng.standard_normal((directions, x0.size))])
         h = prefix.forward_around(torch.tensor(x).to(DEVICE)).cpu().numpy()
         moved = h[1:] - h[0]
         size = np.linalg.norm(moved, axis=1) * np.linalg.norm(w)
-        if np.any(np.abs(moved @ w) > IDENTITY_MAX * size):
-            return False
-    return True
+        identity += not np.any(np.abs(moved @ w) > IDENTITY_MAX * size)
+    return identity >= IDENTITY_SHARE * len(result["cluster"])
 
 
-def is_duplicate(found_clusters, result):
-    """Whether result is a neuron already found.  Weights set to 0 (exactly 0.0) are unknown, not zero, and two clusters
-    of one neuron may zero different ones: they are compared on the weights both of them know."""
+def is_duplicate(found_clusters, result, cos=0.8):
+    """Whether result is a neuron already found (|cos| above `cos`).  Weights set to 0 (exactly 0.0) are unknown, not
+    zero, and two clusters of one neuron may zero different ones: they are compared on the weights both of them know."""
     w = result['weight']
     for other in found_clusters:
         known = (w != 0) & (other['weight'] != 0)
         a, b = w[known], other['weight'][known]
-        if len(a) and abs(a @ b) > 0.8 * np.linalg.norm(a) * np.linalg.norm(b):
+        if len(a) and abs(a @ b) > cos * np.linalg.norm(a) * np.linalg.norm(b):
             return True
     return False
 
@@ -324,9 +353,11 @@ def cluster_layer(layer, duals_dir, prefix_files, num_workers, width):
         random.Random(BASE_SEED).shuffle(x)
         return reject_on_earlier_layer(x, prefix, layer)
 
-    seeds = []
-    for f in dual_files[:FILES_AT_START]:
-        seeds.extend(load_seeds(f))
+    seeds, homes = [], []      # the seeds, and the index in dual_files of the walk each came from
+    for k, f in enumerate(dual_files[:FILES_AT_START]):
+        x = load_seeds(f)
+        seeds.extend(x)
+        homes.extend([k] * len(x))
     files_loaded = FILES_AT_START
 
     found_clusters = []
@@ -345,35 +376,71 @@ def cluster_layer(layer, duals_dir, prefix_files, num_workers, width):
         nonlocal next_seed
         while len(futures) < max_active and next_seed < len(seeds):
             worker = next_seed % num_workers
-            args = (next_seed, seeds[next_seed], found_clusters + rejected, dual_files, worker, worker)
+            args = (next_seed, seeds[next_seed], found_clusters + rejected, dual_files, worker, worker, homes[next_seed])
             futures[executor.submit(process_single_candidate, args)] = next_seed
             next_seed += 1
+
+    def take(result):
+        """Accept a worker's result; True once the layer is complete."""
+        # A rejected cluster only stops the same hyperplane from coming back: a deeper neuron's row within one region is
+        # a combination of this layer's rows, and may well be as close to a real neuron's as the loose test allows.
+        if result is None or is_duplicate(found_clusters, result) or is_duplicate(rejected, result, cos=SAME_ROW):
+            return False
+        found_clusters.append(result)
+        print("cluster %d of %d: %d duals" % (len(found_clusters), width, len(result['cluster'])), flush=True)
+        if len(found_clusters) == width:
+            # Checked once the layer looks complete: only then are the other clusters' hyperplanes all there.
+            drop_disguised()
+        return len(found_clusters) == width
 
     with ProcessPoolExecutor(max_workers=num_workers, initializer=init_worker, initargs=(layer, prefix_files, duals_dir)) as executor:
         submit(executor)
         while futures:
             done = next(as_completed(futures))
             futures.pop(done)
-            result = done.result()
-            if result is not None and not is_duplicate(found_clusters + rejected, result):
-                found_clusters.append(result)
-                print("cluster %d of %d: %d duals" % (len(found_clusters), width, len(result['cluster'])), flush=True)
-                if len(found_clusters) == width:
-                    # Checked once the layer looks complete: only then are the other clusters' hyperplanes all there.
-                    drop_disguised()
-                if len(found_clusters) == width:
-                    # Every neuron of the layer is accounted for: the remaining seeds can only be duals of deeper layers.
+            if take(done.result()):
+                # Every neuron of the layer is accounted for: the remaining seeds can only be duals of deeper layers.
+                for future in futures:
+                    future.cancel()
+                break
+            # feed in another file of seeds as the scan gets deep into the current ones
+            if next_seed >= len(seeds) - max_active and files_loaded < len(dual_files) and files_loaded <= FILES_AT_START + next_seed // 1000:
+                x = load_seeds(dual_files[files_loaded])
+                seeds.extend(x)
+                homes.extend([files_loaded] * len(x))
+                files_loaded += 1
+            submit(executor)
+
+        if len(found_clusters) < width:
+            # the seeds ran out first: the layer never looked complete, check it now
+            drop_disguised()
+        if len(found_clusters) < width:
+            # Second pass, for neurons with few duals: every dual on none of the hyperplanes found (nor rejected) is a
+            # seed once more, and scans all of those in full instead of giving up after 1000.  Most duals belong to the
+            # neurons found, so a rare neuron's duals are far denser among the rest.
+            rest = []
+            known = found_clusters + rejected
+            for f in dual_files:
+                for d in load_seeds(f):
+                    h = prefix.forward(torch.tensor(np.array(d[1])).to(DEVICE)).cpu().numpy()[0]
+                    if not any(abs(h @ c['weight'] + c['bias']) < 1e-5 for c in known):
+                        rest.append(d)
+            fd, rest_path = tempfile.mkstemp(suffix=".p")
+            with os.fdopen(fd, "wb") as fh:
+                pickle.dump(rest, fh)
+            print("   second pass: %d neurons missing, %d duals on none of the hyperplanes found"
+                  % (width - len(found_clusters), len(rest)), flush=True)
+            futures = {}
+            for i in range(len(rest)):
+                args = (SECOND_PASS_ID + i, None, found_clusters + rejected, dual_files, i % num_workers, i % num_workers,
+                        (rest_path, i))
+                futures[executor.submit(process_single_candidate, args)] = i
+            for done in as_completed(futures):
+                if take(done.result()):
                     for future in futures:
                         future.cancel()
                     break
-            # feed in another file of seeds as the scan gets deep into the current ones
-            if next_seed >= len(seeds) - max_active and files_loaded < len(dual_files) and files_loaded <= FILES_AT_START + next_seed // 1000:
-                seeds.extend(load_seeds(dual_files[files_loaded]))
-                files_loaded += 1
-            submit(executor)
-    if len(found_clusters) < width:
-        # the seeds ran out first (a neuron with no duals at all, say): the layer never looked complete, check it now
-        drop_disguised()
+            os.remove(rest_path)
     if rejected:
         print("   %d clusters dropped as deeper neurons" % len(rejected), flush=True)
     return found_clusters
