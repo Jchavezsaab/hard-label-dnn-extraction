@@ -50,9 +50,9 @@ HIDDEN_LAYERS = len(WIDTHS)
 CLASSES = ARCHITECTURE["classes"]
 
 WALKS = 5                               # walks made up front; more are made when a layer's clustering needs them
-MAX_WALKS_CLUSTERING = 16               # walks a layer's clustering may use at most (more than WALKS: walks made then)
+MAX_WALKS_CLUSTERING = 64               # walks a layer's clustering may use at most (more than WALKS: walks made then)
 WALK_PATHS = 45
-PATH_POINTS = 10                        # duals a path records at most (ids paths averaged ~52 uncapped)
+PATH_POINTS = 20                        # duals a path records at most (ids paths averaged ~52 uncapped)
 KINKS = 64
 VOTES_MIN, VOTES_MAX = 20, 1000
 SIGN_PASSES_MAX = 6                     # sign passes at most (the first votes, the others re-vote: recover_signs)
