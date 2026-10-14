@@ -17,6 +17,7 @@
 # Usage: run.py [WORKERS] [--model MODEL.keras] [--out OUT_DIR]
 
 import argparse
+import itertools
 import json
 import multiprocessing
 import os
@@ -53,6 +54,9 @@ WALKS = 5                               # walks made up front; more are made whe
 MAX_WALKS_CLUSTERING = 64               # walks a layer's clustering may use at most (more than WALKS: walks made then)
 WALK_PATHS = 45
 PATH_POINTS = 20                        # duals a path records at most (ids paths averaged ~52 uncapped)
+# Where each path starts, in turn: on the boundary between two random points of different labels (most land between
+# the commonest classes), or between a given pair of classes, so that rare classes' boundaries get paths too.
+PATH_STARTS = [None] + list(itertools.combinations(range(CLASSES), 2))
 KINKS = 64
 VOTES_MIN, VOTES_MAX = 20, 1000
 SIGN_PASSES_MAX = 6                     # sign passes at most (the first votes, the others re-vote: recover_signs)
@@ -127,16 +131,22 @@ def unit_rows(rb):
 # ----------------------------------------------------------------------------------------------------------------------
 # 1. dual points
 # ----------------------------------------------------------------------------------------------------------------------
-def one_path(seed):
-    """One path along the decision boundary (find_duals) -> its dual points.  A walk is WALK_PATHS of them."""
+def one_path(job):
+    """One path along the decision boundary (find_duals) -> its dual points.  A walk is WALK_PATHS of them.
+
+    job = (k, p): path p of walk k.  The paths take the PATH_STARTS in turn, counted across walks, so every walk (also
+    one made on demand) carries on the cycle where the one before it stopped."""
     import torch
     import find_duals
 
+    k, p = job
+    seed = 1000 * k + p
     np.random.seed(seed)
     random.seed(seed)
     torch.manual_seed(seed)
     before = query_count()
-    bends = find_duals.find_dual_points(max_points=PATH_POINTS + 1)   # n + 1 bends make n duals
+    start = PATH_STARTS[((k - 1) * WALK_PATHS + p) % len(PATH_STARTS)]
+    bends = find_duals.find_dual_points(max_points=PATH_POINTS + 1, classes=start)   # n + 1 bends make n duals
     # Each bend is a dual point.  The clustering wants it together with a point and the boundary normal on each side of
     # it: (point before, dual, point after, normal before, normal after).  The point / normal after one bend are the
     # point / normal before the next one.
@@ -148,7 +158,7 @@ def one_path(seed):
 def make_walks(numbers):
     """Walks with the given numbers, their paths spread over the workers -> ({number: duals}, queries)."""
     jobs = [(k, p) for k in numbers for p in range(WALK_PATHS)]
-    per_path, queries = parallel(one_path, [1000 * k + p for k, p in jobs])
+    per_path, queries = parallel(one_path, jobs)
     walks = {k: [] for k in numbers}
     for (k, _), duals in zip(jobs, per_path):
         walks[k].extend(duals)

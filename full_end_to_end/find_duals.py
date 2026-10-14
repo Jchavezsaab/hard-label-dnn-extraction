@@ -26,10 +26,11 @@ def refine_to_decision_boundary(forward, normal):
 
 # Find a critical point by walking along the hyperplane until
 # we run into a bend, then go a bit further and record that point.  Stops after max_points bends (None: no limit).
-def find_dual_points(max_points=None):
+# Starts on the boundary between the two labels in `classes` (None: any two labels; see find_decision_boundary).
+def find_dual_points(max_points=None, classes=None):
     middle_points = []
 
-    start_point = boundary = original_boundary = find_decision_boundary()
+    start_point = boundary = original_boundary = find_decision_boundary(classes=classes)
 
     last_dist_to_start = 1e9
 

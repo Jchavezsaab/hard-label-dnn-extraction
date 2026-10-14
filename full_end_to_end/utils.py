@@ -19,16 +19,18 @@ def bmodel(x):
     return torch.tensor(label(x.cpu().numpy())).reshape(-1).to(torch.int32)
 
 
-def find_decision_boundary(zero=None, one=None, tensor=False):
+def find_decision_boundary(zero=None, one=None, tensor=False, classes=None):
+    """A point on the decision boundary between zero and one; without them, between two random normal points of
+    different labels, or of the two labels in `classes` (to reach the boundaries of rare classes too)."""
     if zero is None and one is None:
         points = {}
-        while len(points) < 2:
+        while (len(points) < 2) if classes is None else not all(c in points for c in classes):
             maybe = np.random.normal(size=(10, IDIM))
             maybe = torch.tensor(maybe).to(DEVICE).double()
             outs = bmodel(maybe)
             for out, point in zip(outs, maybe):
                 points[out.item()] = point
-        zero, one = list(points.values())[:2]
+        zero, one = list(points.values())[:2] if classes is None else (points[classes[0]], points[classes[1]])
     #assert model(zero) != model(one)
 
     model_zero = bmodel(zero)
