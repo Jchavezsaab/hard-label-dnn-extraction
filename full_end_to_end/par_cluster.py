@@ -21,7 +21,7 @@ BASE_SEED = 10000
 MIN_CLUSTER = 3
 MIN_CLUSTER_ZEROED = 8    # a cluster whose solution sets weights to 0 must grow to this many duals before it counts
 SPLIT_MIN = 0.25           # a cluster split by fewer than this fraction of the others' hyperplanes is a deeper neuron (disguised)
-PRUNE_SIZES = (4, 6)       # a cluster whose members have no common hyperplane: subsets of these sizes are tried (prune)
+PRUNE_SIZES = (3, 4, 6)    # a cluster whose members have no common hyperplane: subsets of these sizes are tried (prune)
 PRUNE_TRIALS = 40          #   this many of each size
 PRUNES_MAX = 3             #   at most this many times per seed
 PRUNE_TOL = 1e-5           #   a member lies on a subset's hyperplane if its activation gives the bias to this
@@ -145,8 +145,13 @@ def process_single_candidate(args):
 
     def prune_or_stop(why):
         """The members fail together: keep the ones on the best hyperplane through the seed and grow on, or give up."""
-        nonlocal maybe, prunes
+        nonlocal maybe, prunes, last_try_size
         logging.info(f"[W{worker_id}] {why}")
+        if len(maybe) <= PRUNE_SIZES[0]:
+            # Too few to tell which one is the stray (any smaller subset with the seed fits trivially): wait for one more
+            # member, then prune.  Without this, one stray among a seed's first partners ends the seed.
+            last_try_size = len(maybe) + 1
+            return True
         if prunes >= PRUNES_MAX:
             return False
         prunes += 1
