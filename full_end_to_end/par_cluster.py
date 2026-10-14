@@ -404,7 +404,8 @@ def mark_complete(path):
 
 def walk_files(duals_dir):
     """The walk files of duals_dir in the order of their walks (walk1.p, walk2.p, ...): walks made later come last."""
-    return sorted(os.listdir(duals_dir), key=lambda f: int("".join(c for c in f if c.isdigit()) or 0))
+    names = [f for f in os.listdir(duals_dir) if f.startswith("walk") and f.endswith(".p")]
+    return sorted(names, key=lambda f: int("".join(c for c in f if c.isdigit()) or 0))
 
 
 def cluster_layer(layer, duals_dir, prefix_files, num_workers, width, checkpoint=None, previous=None,
@@ -443,9 +444,24 @@ def cluster_layer(layer, duals_dir, prefix_files, num_workers, width, checkpoint
         save()
         return found_clusters
 
+    executor = None
+
+    def pool():
+        """The clustering's worker pool, started when first needed (and again after a walk was made)."""
+        nonlocal executor
+        if executor is None:
+            executor = ProcessPoolExecutor(max_workers=num_workers, initializer=init_worker,
+                                           initargs=(layer, prefix_files, duals_dir))
+        return executor
+
     def have_walks(n):
-        """Whether the first n walks exist, making the missing ones with new_walk if there is one."""
+        """Whether the first n walks exist, making the missing ones with new_walk if there is one.  The clustering's
+        workers are shut down first: making a walk uses workers of its own, and two pools at once are trouble."""
+        nonlocal executor
         while len(files) < n and new_walk is not None:
+            if executor is not None:
+                executor.shutdown(wait=True)
+                executor = None
             files.append(new_walk(len(files) + 1))
         return len(files) >= n
 
@@ -531,11 +547,11 @@ def cluster_layer(layer, duals_dir, prefix_files, num_workers, width, checkpoint
             submit()
         return False
 
-    with ProcessPoolExecutor(max_workers=num_workers, initializer=init_worker, initargs=(layer, prefix_files, duals_dir)) as executor:
+    try:
         if have_walks(walks):
             # (on going on from a checkpoint, the seeds of every walk in use come back; those tried are skipped)
             print("   clustering over walks 1-%d" % walks, flush=True)
-            complete = run_stage(executor, stage_seeds(0, walks), 0)
+            complete = run_stage(pool(), stage_seeds(0, walks), 0)
             while not complete:
                 drop_disguised()
                 if len(found_clusters) >= width or walks >= max_walks or not have_walks(walks + 1):
@@ -544,7 +560,10 @@ def cluster_layer(layer, duals_dir, prefix_files, num_workers, width, checkpoint
                 save()
                 print("   %d of %d clusters: adding walk %d (its duals as seeds against walks 1-%d)"
                       % (len(found_clusters), width, walks, walks), flush=True)
-                complete = run_stage(executor, stage_seeds(walks - 1, walks), walks - 1)
+                complete = run_stage(pool(), stage_seeds(walks - 1, walks), walks - 1)
+    finally:
+        if executor is not None:
+            executor.shutdown(wait=False, cancel_futures=True)
     if len(found_clusters) < width:
         drop_disguised()
         print("   %d of %d clusters after %d walks" % (len(found_clusters), width, walks), flush=True)

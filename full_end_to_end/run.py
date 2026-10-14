@@ -49,7 +49,7 @@ WIDTHS = ARCHITECTURE["widths"]         # neurons in each hidden layer
 HIDDEN_LAYERS = len(WIDTHS)
 CLASSES = ARCHITECTURE["classes"]
 
-WALKS = 32                              # neurons that are almost always on get few duals: walk enough to cluster them
+WALKS = 5                               # walks made up front; more are made when a layer's clustering needs them
 MAX_WALKS_CLUSTERING = 16               # walks a layer's clustering may use at most (more than WALKS: walks made then)
 WALK_PATHS = 45
 KINKS = 64
@@ -126,7 +126,8 @@ def unit_rows(rb):
 # ----------------------------------------------------------------------------------------------------------------------
 # 1. dual points
 # ----------------------------------------------------------------------------------------------------------------------
-def one_walk(seed):
+def one_path(seed):
+    """One path along the decision boundary (find_duals) -> its dual points.  A walk is WALK_PATHS of them."""
     import torch
     import find_duals
 
@@ -134,40 +135,53 @@ def one_walk(seed):
     random.seed(seed)
     torch.manual_seed(seed)
     before = query_count()
-    duals = []
-    for _ in range(WALK_PATHS):
-        bends = find_duals.find_dual_points()
-        # Each bend is a dual point.  The clustering wants it together with a point and the boundary normal on each
-        # side of it: (point before, dual, point after, normal before, normal after).  The point / normal after one
-        # bend are the point / normal before the next one.
-        for (point_before, dual, normal_before), (point_after, _, normal_after) in zip(bends, bends[1:]):
-            duals.append((point_before, dual, point_after, normal_before, normal_after))
+    bends = find_duals.find_dual_points()
+    # Each bend is a dual point.  The clustering wants it together with a point and the boundary normal on each side of
+    # it: (point before, dual, point after, normal before, normal after).  The point / normal after one bend are the
+    # point / normal before the next one.
+    duals = [(point_before, dual, point_after, normal_before, normal_after)
+             for (point_before, dual, normal_before), (point_after, _, normal_after) in zip(bends, bends[1:])]
     return duals, query_count() - before
 
 
-def extra_walk(k):
-    """Walk k (1-based) made after the first WALKS, when a layer's clustering needs more walks; returns its file."""
-    started = step("walk %d (more walks for the clustering)" % k)
-    duals, queries = one_walk(k)
+def make_walks(numbers):
+    """Walks with the given numbers, their paths spread over the workers -> ({number: duals}, queries)."""
+    jobs = [(k, p) for k in numbers for p in range(WALK_PATHS)]
+    per_path, queries = parallel(one_path, [1000 * k + p for k, p in jobs])
+    walks = {k: [] for k in numbers}
+    for (k, _), duals in zip(jobs, per_path):
+        walks[k].extend(duals)
+    return walks, queries
+
+
+def save_walk(directory, k, duals):
     name = "walk%d.p" % k
-    record("walk%d" % k, started, queries, duals=len(duals))
-    with open(os.path.join(OUT, "duals", name + ".partial"), "wb") as fh:
+    with open(os.path.join(directory, name + ".partial"), "wb") as fh:
         pickle.dump(duals, fh)
-    os.replace(os.path.join(OUT, "duals", name + ".partial"), os.path.join(OUT, "duals", name))
+    os.replace(os.path.join(directory, name + ".partial"), os.path.join(directory, name))
     return name
+
+
+def extra_walk(k):
+    """Walk k (1-based) made after the first WALKS, when a layer's clustering needs more walks; returns its file.  It
+    joins the others in out/duals, so every later step and layer uses it too."""
+    started = step("walk %d (more walks for the clustering)" % k)
+    walks, queries = make_walks([k])
+    record("walk%d" % k, started, queries, duals=len(walks[k]))
+    return save_walk(os.path.join(OUT, "duals"), k, walks[k])
 
 
 def walk():
     duals_dir = os.path.join(OUT, "duals")
     if os.path.exists(duals_dir):
         return duals_dir
-    started = step("walk: %d x %d walks along the decision boundary" % (WALKS, WALK_PATHS))
-    per_walk, queries = parallel(one_walk, range(1, WALKS + 1))
+    started = step("walk: %d x %d paths along the decision boundary" % (WALKS, WALK_PATHS))
+    walks, queries = make_walks(range(1, WALKS + 1))
     partial = duals_dir + ".partial"
     os.makedirs(partial, exist_ok=True)
-    for seed, duals in enumerate(per_walk, start=1):
-        pickle.dump(duals, open(os.path.join(partial, "walk%d.p" % seed), "wb"))
-    record("walk", started, queries, duals=sum(len(d) for d in per_walk))
+    for k, duals in walks.items():
+        save_walk(partial, k, duals)
+    record("walk", started, queries, duals=sum(len(d) for d in walks.values()))
     os.rename(partial, duals_dir)
     return duals_dir
 
@@ -234,8 +248,10 @@ def stored_duals(L, refined):
     """For every row of layer L, the walk's dual points that lie on its hyperplane (within STORED_DIST in input space),
     at most VOTES_MAX each: they carry the decision boundary's normals on both sides, so they are sign experiments
     without queries (signs.analyzeStoredDual).  Duals on a hyperplane of the layers below are left out."""
+    import par_cluster
+
     duals = []
-    for f in sorted(os.listdir(os.path.join(OUT, "duals"))):
+    for f in par_cluster.walk_files(os.path.join(OUT, "duals")):
         duals.extend(pickle.load(open(os.path.join(OUT, "duals", f), "rb")))
     prefix = [np.load(f) for f in prefix_files(L)]
     h = np.array([d[1] for d in duals], dtype=np.float64)
