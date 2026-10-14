@@ -50,6 +50,7 @@ HIDDEN_LAYERS = len(WIDTHS)
 CLASSES = ARCHITECTURE["classes"]
 
 WALKS = 32                              # neurons that are almost always on get few duals: walk enough to cluster them
+MAX_WALKS_CLUSTERING = 16               # walks a layer's clustering may use at most (more than WALKS: walks made then)
 WALK_PATHS = 45
 KINKS = 64
 VOTES_MIN, VOTES_MAX = 20, 1000
@@ -144,6 +145,18 @@ def one_walk(seed):
     return duals, query_count() - before
 
 
+def extra_walk(k):
+    """Walk k (1-based) made after the first WALKS, when a layer's clustering needs more walks; returns its file."""
+    started = step("walk %d (more walks for the clustering)" % k)
+    duals, queries = one_walk(k)
+    name = "walk%d.p" % k
+    record("walk%d" % k, started, queries, duals=len(duals))
+    with open(os.path.join(OUT, "duals", name + ".partial"), "wb") as fh:
+        pickle.dump(duals, fh)
+    os.replace(os.path.join(OUT, "duals", name + ".partial"), os.path.join(OUT, "duals", name))
+    return name
+
+
 def walk():
     duals_dir = os.path.join(OUT, "duals")
     if os.path.exists(duals_dir):
@@ -183,6 +196,7 @@ def solve(L, duals_dir):
             print("   going on from %d clusters (%d rejected) in %s" % (len(state["clusters"]), len(state["rejected"]),
                   clusters_file), flush=True)
         clusters = par_cluster.cluster_layer(L, duals_dir, prefix_files(L), WORKERS, WIDTHS[L], checkpoint=clusters_file,
+                                             max_walks=MAX_WALKS_CLUSTERING, new_walk=extra_walk,
                                              previous=state)
         record("layer%d/cluster" % L, started, 0, clusters=len(clusters))     # the duals carry their normals: no queries needed
         par_cluster.mark_complete(clusters_file)
