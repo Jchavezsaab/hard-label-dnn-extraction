@@ -18,6 +18,8 @@ MIN_TANGENT = 0.1
 NO_BEND = 1e-6
 SECOND_KINK_STATIONS = 8
 SEEN_MIN = 3                # fit_row: a prefix unit on at fewer kinks than this keeps its old weight
+KNOWN_MOVED = 1e-6          # refine_neuron: a fit whose known weights move more than this (1 - |cos|) is rejected ...
+COMPLETE_ATTEMPTS = 3       #   and the completion tried again, this many times in all
 AGREE = 2                   # complete_row: equations beyond the unknowns that must agree exactly
 
 
@@ -333,7 +335,7 @@ def consensus(E, y, rng, tries=200):
             a = np.linalg.solve(E[subset], y[subset])
         except np.linalg.LinAlgError:
             continue
-        agree = np.abs(E @ a - y) <= tol * (1 + np.linalg.norm(a))
+        agree = np.abs(E @ a - y) <= tol         # not scaled with a: a wrong, large a would loosen it
         if agree.sum() > best.sum():
             best = agree
     if not best.any():
@@ -597,40 +599,62 @@ def refine_neuron(args):
         stats["seconds"] = round(time.time() - t0, 2)
         return stats
 
-    completed = anchors = None
-    if len(prefix) and np.any(rows[j, :-1] == 0):
-        # weights the clustering set to 0: find them first, so that the kinks below may fall where those inputs are on
-        row, completed, anchors = complete_row(prefix, rows, j, rng, radii, e)
-        if row is None:
-            return j, rows[j], finish(dict(tried=0, kinks=0, rejected={}, kept_old=True, completed=completed))
-        rows = rows.copy()
-        rows[j] = row
-    H, bends, info = mint_kinks(prefix, rows, j, K, rng, radii, e, max_tries=40 * K)
-    info["kinks"] = len(H)
-    if completed is not None:
-        info["completed"] = completed
+    original = rows[j].copy()
+    known = np.r_[original[:-1] != 0, True]        # the weights the clustering found (the rest are 0: unknown)
 
-    if len(H) < extra_points(rows.shape[1]):
-        info["kept_old"] = True
-        return j, rows[j], finish(info)
-    v, fit = fit_row(H, bends, rows[j])
-    kept = [k for k in fit.get("kept_weights", []) if anchors is not None and np.all(anchors[:, k] > 0)]
-    if kept:
-        # no kink had these inputs on, so fit_row kept complete_row's weights, which were found against the unrefined
-        # row: solve them again from complete_row's kinks (which lie on the neuron's hyperplane), now behind the fitted rest
-        rest = np.setdiff1d(np.arange(len(v) - 1), kept)
-        v[kept] = np.linalg.lstsq(anchors[:, kept], -(anchors[:, rest] @ v[rest] + v[-1]), rcond=None)[0]
-        v = v / np.linalg.norm(v[:-1])
-        fit["resolved_weights"] = kept
-    stats = dict(info, **fit)
-    stats["moved"] = float(np.linalg.norm(v - rows[j]))
+    def attempt(rows):
+        completed = anchors = None
+        if len(prefix) and not known.all():
+            # weights the clustering set to 0: find them first, so that the kinks below may fall where those inputs are on
+            row, completed, anchors = complete_row(prefix, rows, j, rng, radii, e)
+            if row is None:
+                return None, dict(tried=0, kinks=0, rejected={}, kept_old=True, completed=completed)
+            rows = rows.copy()
+            rows[j] = row
+        H, bends, info = mint_kinks(prefix, rows, j, K, rng, radii, e, max_tries=40 * K)
+        info["kinks"] = len(H)
+        if completed is not None:
+            info["completed"] = completed
+        if len(H) < extra_points(rows.shape[1]):
+            info["kept_old"] = True
+            return None, info
+        v, fit = fit_row(H, bends, rows[j])
+        kept = [k for k in fit.get("kept_weights", []) if anchors is not None and np.all(anchors[:, k] > 0)]
+        if kept:
+            # no kink had these inputs on, so fit_row kept complete_row's weights, which were found against the
+            # unrefined row: solve them again from complete_row's kinks (which lie on the neuron's hyperplane), now
+            # behind the fitted rest
+            rest = np.setdiff1d(np.arange(len(v) - 1), kept)
+            v[kept] = np.linalg.lstsq(anchors[:, kept], -(anchors[:, rest] @ v[rest] + v[-1]), rcond=None)[0]
+            v = v / np.linalg.norm(v[:-1])
+            fit["resolved_weights"] = kept
+        stats = dict(info, **fit)
+        stats["moved"] = float(np.linalg.norm(v - rows[j]))
+        if fit["resid_rms"] > BAD_FIT or fit["sv_gap"] < BAD_RANK:
+            # A fit this far from round-off is contaminated, or the kept kinks span no plane: the input row is the better
+            # answer.
+            stats["kept_old"] = True
+            stats["bad_fit"] = True
+            return None, stats
+        # The weights the clustering found are good to ~1e-7: if the fit moved them, the completed weights were wrong
+        # (a few kinks of another hyperplane agreeing by chance) and the kinks followed the wrong hyperplane.
+        cos = abs(v[known] @ original[known]) / (np.linalg.norm(v[known]) * np.linalg.norm(original[known]))
+        stats["known_cos"] = float(cos)
+        if cos < 1 - KNOWN_MOVED:
+            stats["kept_old"] = True
+            stats["moved_known"] = True
+            return None, stats
+        return v, stats
+
+    tries = []
+    for _ in range(COMPLETE_ATTEMPTS if not known.all() else 1):
+        v, stats = attempt(rows)
+        tries.append(stats)
+        if v is not None:
+            break
+    stats = dict(tries[-1], attempts=len(tries))
     stats = finish(stats)
-    if fit["resid_rms"] > BAD_FIT or fit["sv_gap"] < BAD_RANK:
-        # A fit this far from round-off is contaminated, or the kept kinks span no plane: the input row is the better answer.
-        stats["kept_old"] = True
-        stats["bad_fit"] = True
-        return j, rows[j], stats
-    return j, v, stats
+    return j, (original if v is None else v), stats
 
 
 def run_jobs(jobs, procs):
