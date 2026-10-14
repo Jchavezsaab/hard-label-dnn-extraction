@@ -8,6 +8,7 @@ import pickle
 import hashlib
 import random
 import tempfile
+import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import multiprocessing
 import numpy as np
@@ -29,10 +30,12 @@ FACE_TOL = 1e-6            # a row whose input normal is within this (1 - |cos|)
 FACE_SHARE = 0.5           # ... at this share of its duals is a face of the decision boundary (is_face)
 FACE_PLANE_TOL = 1e-5      # a dual lies on a face if its activation gives the face's bias to this
 FACES_MAX = 3              # a seed gives up after this many faces
+GAP_MIN = 0.007            # a fit whose second singular value (relative) is below this is too poorly determined
 IDENTITY_MAX = 1e-8        # a hyperplane that moves off its duals by less than this (relative) holds everywhere (prefix_identity)
 IDENTITY_SHARE = 0.25      # ... and a cluster with this share of such identity duals is rejected (prefix_identity)
 ENGAGED_MIN = 1e-3         # a row with less of its weight than this on the inputs on at one of its duals is rejected
 SAME_ROW = 1 - 1e-6        # a cluster this parallel to a rejected one is the same hyperplane again (cluster_layer)
+PROGRESS_EVERY = 100       # a progress line is printed after this many seeds
 SAVE_EVERY = 200           # the clustering state is saved after this many seeds (and after every cluster)
 SECOND_PASS_ID = 10 ** 6   # cluster ids (and so seeds of the random draws) of the second pass start here
 SAME_NORMAL = 1 - 1e-6     # two duals whose boundary normals are this parallel are the same bend (not added twice)
@@ -71,39 +74,61 @@ def reject_on_earlier_layer(x, prefix, layer):
 
 
 
-def load_dual_batch(dual_files, start_idx, random_seed, layer, first=None):
-    """Generator that yields every dual once, starting at file `first` (by default a file offset derived from
-    start_idx), wrapping around so every file gets searched"""
-    if first is None:
-        first = (start_idx // 10000) % len(dual_files)  # Rough estimate of duals per file
-    remaining = list(range(first, len(dual_files))) + list(range(first))
-    current_file_duals = []
-    dual_idx = 0
+_walks = None             # every walk file's usable duals and their prefix outputs, loaded once per worker
 
-    while remaining or dual_idx < len(current_file_duals):
-        # Load next file if we've exhausted current one
-        if dual_idx >= len(current_file_duals):
-            f = dual_files[remaining.pop(0)]
-            x = pickle.load(open(os.path.join(_duals_dir, f), "rb"))
-            random.Random(BASE_SEED + random_seed).shuffle(x)
-            current_file_duals = reject_on_earlier_layer(x, _worker_prefix, layer)
-            dual_idx = 0
-            if not current_file_duals:  # Skip empty files
-                continue
-        
-        # Yield duals from current file
-        while dual_idx < len(current_file_duals):
-            yield current_file_duals[dual_idx]
-            dual_idx += 1
 
+def walk_pool(dual_files):
+    """[(duals, H)] per walk file, in dual_files' order: the duals that are not on a hyperplane of an earlier layer, and
+    their outputs behind the prefix (to tell, without a pairwise test, which lie on a hyperplane already found)."""
+    global _walks
+    if _walks is None:
+        _walks = []
+        for f in dual_files:
+            x = reject_on_earlier_layer(pickle.load(open(os.path.join(_duals_dir, f), "rb")), _worker_prefix, _worker_layer)
+            H = (_worker_prefix.forward(torch.tensor(np.array([d[1] for d in x])).to(DEVICE)).cpu().numpy()
+                 if x else np.zeros((0, 0)))
+            _walks.append((x, H))
+    return _walks
+
+
+def partners(dual_files, home, known, rng):
+    """The candidates for a seed's cluster, one walk at a time in turn: one from the seed's own walk (index `home` in
+    dual_files), one from the next, and so on, cycling, each walk in its own random order.  Duals on a hyperplane in
+    `known` (the clusters found or rejected so far) are left out: they belong to another neuron."""
+    walks = walk_pool(dual_files)
+    if known:
+        W = np.array([c["weight"] for c in known])
+        B = np.array([c["bias"] for c in known])
+    start = home if home is not None else int(rng.integers(len(walks)))
+    order = []
+    for k in list(range(start, len(walks))) + list(range(start)):
+        duals, H = walks[k]
+        if not duals:
+            continue
+        keep = np.ones(len(duals), bool)
+        if known:
+            keep = ~np.any(np.abs(H @ W.T + B) < 1e-5, axis=1)
+        idx = np.flatnonzero(keep)
+        rng.shuffle(idx)
+        if len(idx):
+            order.append((duals, idx))
+    position = 0
+    while order:
+        still = []
+        for duals, idx in order:
+            yield duals[idx[position]]
+            if position + 1 < len(idx):
+                still.append((duals, idx))
+        order = still
+        position += 1
 
 
 def process_single_candidate(args):
     """Process a single candidate neuron to find a cluster"""
     cluster_id, a, found_clusters, dual_files, random_seed, worker_id = args[:6]
-    # args[6]: the index in dual_files of the seed's own walk, scanned first (a walk tends to cross a neuron's
-    # hyperplane several times in a row), or (path, i): second pass, the seed is duals[i] of the leftover pool in path,
-    # and only that pool is scanned, in full
+    # args[6]: the index in dual_files of the seed's own walk, where the scan starts (a walk tends to cross a neuron's
+    # hyperplane several times in a row; see partners), or (path, i): second pass, the seed is duals[i] of the leftover
+    # pool in path, and only that pool is scanned, in full
     home, pool = (args[6] if len(args) > 6 else None), None
     if isinstance(home, tuple):
         pool = load_rest(home[0])
@@ -152,9 +177,10 @@ def process_single_candidate(args):
         return True
     
     logging.info(f"Going {dual_files}")
-    scan = pool if pool is not None else load_dual_batch(dual_files, cluster_id * 100, random_seed, layer, first=home)
+    scan = pool if pool is not None else partners(dual_files, home, found_clusters,
+                                                  np.random.default_rng([BASE_SEED, cluster_id]))
     for j, b in enumerate(scan):
-        if b is a:
+        if b is a or np.array_equal(b[1], a[1]):
             logging.info(f"[W{worker_id}] Skip adding the same neuron twice")
             continue
         if pool is None and j - restart > 1000 and len(maybe) == 1:
@@ -190,6 +216,12 @@ def process_single_candidate(args):
                     if prune_or_stop("Invalid cluster"):
                         continue
                     break
+                if S[-2] < GAP_MIN * S[0]:
+                    # barely one null direction: the hyperplane is poorly determined by these duals (many weights
+                    # unknown, few duals), and duals of several neurons can fit it by accident; grow on for more
+                    logging.info(f"[W{worker_id}] {cluster_id}: hyperplane poorly determined ({S[-2] / S[0]:.1e})")
+                    last_try_size = max(2 * last_try_size, len(maybe) + 1)
+                    continue
                 if is_face(maybe, soln, prefix):
                     # the members fit a face of the decision boundary, not a neuron: keep the seed and whatever is off
                     # the face, keep the face's duals out from now on, and grow on
@@ -404,11 +436,17 @@ def cluster_layer(layer, duals_dir, prefix_files, num_workers, width, checkpoint
         random.Random(BASE_SEED).shuffle(x)
         return reject_on_earlier_layer(x, prefix, layer)
 
-    seeds, homes = [], []      # the seeds, and the index in dual_files of the walk each came from
-    for k, f in enumerate(dual_files[:FILES_AT_START]):
-        x = load_seeds(f)
+    seeds, homes, seed_h = [], [], []   # the seeds, the index in dual_files of their walk, their prefix outputs
+
+    def add_seeds(k):
+        x = load_seeds(dual_files[k])
         seeds.extend(x)
         homes.extend([k] * len(x))
+        if x:
+            seed_h.extend(prefix.forward(torch.tensor(np.array([d[1] for d in x])).to(DEVICE)).cpu().numpy())
+
+    for k in range(FILES_AT_START):
+        add_seeds(k)
     files_loaded = FILES_AT_START
 
     found_clusters = list(previous["clusters"]) if previous else []
@@ -423,13 +461,23 @@ def cluster_layer(layer, duals_dir, prefix_files, num_workers, width, checkpoint
         if checkpoint is not None:
             save_clusters(checkpoint, found_clusters, rejected, False, tried, tried_second)
 
+    started = time.time()
+
     def done_with(key, second=False):
-        """Remember that a seed has been tried; save every SAVE_EVERY of them."""
+        """Remember that a seed has been tried; save every SAVE_EVERY of them, report every PROGRESS_EVERY."""
         nonlocal finished
         (tried_second if second else tried).add(key)
         finished += 1
         if finished % SAVE_EVERY == 0:
             save()
+        if finished % PROGRESS_EVERY == 0:
+            rate = finished / max(time.time() - started, 1e-9)
+            if second:
+                where = "second pass: %d of %d seeds tried" % (len(tried_second), len(rest))
+            else:
+                where = "%d seeds tried of %d loaded (%d of %d walk files)" % (len(tried), len(seeds), files_loaded,
+                                                                            len(dual_files))
+            print("   %s; %d of %d clusters; %.1f seeds/s" % (where, len(found_clusters), width, rate), flush=True)
 
     if len(found_clusters) >= width:
         save()
@@ -449,9 +497,16 @@ def cluster_layer(layer, duals_dir, prefix_files, num_workers, width, checkpoint
 
     def submit(executor):
         nonlocal next_seed
+        known = found_clusters + rejected
+        if known:
+            W = np.array([c["weight"] for c in known])
+            B = np.array([c["bias"] for c in known])
         while len(futures) < max_active and next_seed < len(seeds):
             if dual_key(seeds[next_seed]) in tried:
                 next_seed += 1                 # tried before this run was interrupted
+                continue
+            if known and np.any(np.abs(W @ seed_h[next_seed] + B) < 1e-5):
+                next_seed += 1                 # on a hyperplane found (or rejected) already: its neuron is known
                 continue
             worker = next_seed % num_workers
             args = (next_seed, seeds[next_seed], found_clusters + rejected, dual_files, worker, worker, homes[next_seed])
@@ -484,9 +539,7 @@ def cluster_layer(layer, duals_dir, prefix_files, num_workers, width, checkpoint
                 break
             # feed in another file of seeds as the scan gets deep into the current ones
             if next_seed >= len(seeds) - max_active and files_loaded < len(dual_files) and files_loaded <= FILES_AT_START + next_seed // 1000:
-                x = load_seeds(dual_files[files_loaded])
-                seeds.extend(x)
-                homes.extend([files_loaded] * len(x))
+                add_seeds(files_loaded)
                 files_loaded += 1
             submit(executor)
 
