@@ -5,6 +5,7 @@
 import logging
 import os
 import pickle
+import hashlib
 import random
 import tempfile
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -32,6 +33,7 @@ IDENTITY_MAX = 1e-8        # a hyperplane that moves off its duals by less than 
 IDENTITY_SHARE = 0.25      # ... and a cluster with this share of such identity duals is rejected (prefix_identity)
 ENGAGED_MIN = 1e-3         # a row with less of its weight than this on the inputs on at one of its duals is rejected
 SAME_ROW = 1 - 1e-6        # a cluster this parallel to a rejected one is the same hyperplane again (cluster_layer)
+SAVE_EVERY = 200           # the clustering state is saved after this many seeds (and after every cluster)
 SECOND_PASS_ID = 10 ** 6   # cluster ids (and so seeds of the random draws) of the second pass start here
 SAME_NORMAL = 1 - 1e-6     # two duals whose boundary normals are this parallel are the same bend (not added twice)
 FILES_AT_START = 5         # dual files loaded up front; one more per 1000 seeds tried
@@ -355,9 +357,44 @@ def disguised(clusters, prefix):
     return found
 
 
-def cluster_layer(layer, duals_dir, prefix_files, num_workers, width):
+def dual_key(dual):
+    """A name for a dual point that stays the same from run to run (to remember which seeds were tried)."""
+    return hashlib.sha1(np.asarray(dual[1], dtype=np.float64).tobytes()).hexdigest()[:16]
+
+
+def save_clusters(path, clusters, rejected, complete, tried=(), tried_second=()):
+    """Write the clustering state of a layer (atomically): the clusters accepted, those rejected, whether the
+    clustering finished, and the seeds (dual_key) already tried in the first and in the second pass."""
+    with open(path + ".partial", "wb") as fh:
+        pickle.dump({"clusters": clusters, "rejected": rejected, "complete": complete, "tried": set(tried),
+                     "tried_second": set(tried_second)}, fh)
+    os.replace(path + ".partial", path)
+
+
+def load_clusters(path):
+    """The clustering state written by save_clusters (an older file holding only the list of clusters counts as
+    complete)."""
+    state = pickle.load(open(path, "rb"))
+    if isinstance(state, list):
+        state = {"clusters": state, "rejected": [], "complete": True}
+    state.setdefault("tried", set())
+    state.setdefault("tried_second", set())
+    return state
+
+
+def mark_complete(path):
+    state = load_clusters(path)
+    save_clusters(path, state["clusters"], state["rejected"], True, state["tried"], state["tried_second"])
+
+
+def cluster_layer(layer, duals_dir, prefix_files, num_workers, width, checkpoint=None, previous=None):
     """Returns the clusters found; stops as soon as `width` (the number of neurons in the layer) have been found that
-    are not deeper neurons in disguise (see disguised)."""
+    are not deeper neurons in disguise (see disguised).
+
+    checkpoint: a file the state is saved to (save_clusters, marked incomplete) whenever a cluster is accepted or
+    dropped, and every SAVE_EVERY seeds, so that an interrupted run can go on; previous: such a state to go on from (its
+    clusters are kept, the seeds on their hyperplanes are skipped, and so are the seeds already tried, in each pass).
+    Marking the clustering complete is the caller's (mark_complete)."""
     prefix = Prefix(prefix_files).to(DEVICE)
     dual_files = sorted(os.listdir(duals_dir))
     random.Random(BASE_SEED).shuffle(dual_files)
@@ -374,21 +411,48 @@ def cluster_layer(layer, duals_dir, prefix_files, num_workers, width):
         homes.extend([k] * len(x))
     files_loaded = FILES_AT_START
 
-    found_clusters = []
-    rejected = []              # deeper neurons in disguise: their duals are skipped and they are not accepted again
+    found_clusters = list(previous["clusters"]) if previous else []
+    # deeper neurons in disguise: their duals are skipped and they are not accepted again
+    rejected = list(previous["rejected"]) if previous else []
+
+    tried = set(previous.get("tried", ())) if previous else set()                  # seeds done, first pass
+    tried_second = set(previous.get("tried_second", ())) if previous else set()    # seeds done, second pass
+    finished = 0
+
+    def save():
+        if checkpoint is not None:
+            save_clusters(checkpoint, found_clusters, rejected, False, tried, tried_second)
+
+    def done_with(key, second=False):
+        """Remember that a seed has been tried; save every SAVE_EVERY of them."""
+        nonlocal finished
+        (tried_second if second else tried).add(key)
+        finished += 1
+        if finished % SAVE_EVERY == 0:
+            save()
+
+    if len(found_clusters) >= width:
+        save()
+        return found_clusters
     max_active = num_workers * 2
     next_seed = 0
     futures = {}
 
     def drop_disguised():
-        for i in reversed(disguised(found_clusters, prefix)):
+        dropped = disguised(found_clusters, prefix)
+        for i in reversed(dropped):
             print("   dropped cluster of %d duals: on one side of most of the others' hyperplanes, a deeper neuron"
                   % len(found_clusters[i]['cluster']), flush=True)
             rejected.append(found_clusters.pop(i))
+        if dropped:
+            save()
 
     def submit(executor):
         nonlocal next_seed
         while len(futures) < max_active and next_seed < len(seeds):
+            if dual_key(seeds[next_seed]) in tried:
+                next_seed += 1                 # tried before this run was interrupted
+                continue
             worker = next_seed % num_workers
             args = (next_seed, seeds[next_seed], found_clusters + rejected, dual_files, worker, worker, homes[next_seed])
             futures[executor.submit(process_single_candidate, args)] = next_seed
@@ -402,6 +466,7 @@ def cluster_layer(layer, duals_dir, prefix_files, num_workers, width):
             return False
         found_clusters.append(result)
         print("cluster %d of %d: %d duals" % (len(found_clusters), width, len(result['cluster'])), flush=True)
+        save()
         if len(found_clusters) == width:
             # Checked once the layer looks complete: only then are the other clusters' hyperplanes all there.
             drop_disguised()
@@ -411,7 +476,7 @@ def cluster_layer(layer, duals_dir, prefix_files, num_workers, width):
         submit(executor)
         while futures:
             done = next(as_completed(futures))
-            futures.pop(done)
+            done_with(dual_key(seeds[futures.pop(done)]))
             if take(done.result()):
                 # Every neuron of the layer is accounted for: the remaining seeds can only be duals of deeper layers.
                 for future in futures:
@@ -446,10 +511,13 @@ def cluster_layer(layer, duals_dir, prefix_files, num_workers, width):
                   % (width - len(found_clusters), len(rest)), flush=True)
             futures = {}
             for i in range(len(rest)):
+                if dual_key(rest[i]) in tried_second:
+                    continue                           # tried before this run was interrupted
                 args = (SECOND_PASS_ID + i, None, found_clusters + rejected, dual_files, i % num_workers, i % num_workers,
                         (rest_path, i))
                 futures[executor.submit(process_single_candidate, args)] = i
             for done in as_completed(futures):
+                done_with(dual_key(rest[futures[done]]), second=True)
                 if take(done.result()):
                     for future in futures:
                         future.cancel()
@@ -457,4 +525,5 @@ def cluster_layer(layer, duals_dir, prefix_files, num_workers, width):
             os.remove(rest_path)
     if rejected:
         print("   %d clusters dropped as deeper neurons" % len(rejected), flush=True)
+    save()
     return found_clusters

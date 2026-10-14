@@ -172,15 +172,20 @@ def solve(L, duals_dir):
         return np.load(rows_file)
 
     clusters_file = os.path.join(OUT, "layer%d_clusters.p" % L)
-    if os.path.exists(clusters_file):
-        clusters = pickle.load(open(clusters_file, "rb"))
+    state = par_cluster.load_clusters(clusters_file) if os.path.exists(clusters_file) else None
+    if state is not None and state["complete"]:
+        clusters = state["clusters"]
         print("== layer %d: cluster (%d clusters from %s)" % (L, len(clusters), clusters_file), flush=True)
     else:
+        # The clustering saves its state after every cluster (marked incomplete): an interrupted run goes on from it.
         started = step("layer %d: cluster" % L)
-        clusters = par_cluster.cluster_layer(L, duals_dir, prefix_files(L), WORKERS, WIDTHS[L])
-        pickle.dump(clusters, open(clusters_file + ".partial", "wb"))
+        if state is not None:
+            print("   going on from %d clusters (%d rejected) in %s" % (len(state["clusters"]), len(state["rejected"]),
+                  clusters_file), flush=True)
+        clusters = par_cluster.cluster_layer(L, duals_dir, prefix_files(L), WORKERS, WIDTHS[L], checkpoint=clusters_file,
+                                             previous=state)
         record("layer%d/cluster" % L, started, 0, clusters=len(clusters))     # the duals carry their normals: no queries needed
-        os.replace(clusters_file + ".partial", clusters_file)
+        par_cluster.mark_complete(clusters_file)
 
     started = step("layer %d: solve" % L)
     weights, biases = recover_weights.recover_layer(L, [c["cluster"] for c in clusters], prefix_files(L), WIDTHS[L])
