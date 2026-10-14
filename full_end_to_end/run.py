@@ -52,6 +52,7 @@ CLASSES = ARCHITECTURE["classes"]
 WALKS = 5                               # walks made up front; more are made when a layer's clustering needs them
 MAX_WALKS_CLUSTERING = 16               # walks a layer's clustering may use at most (more than WALKS: walks made then)
 WALK_PATHS = 45
+PATH_POINTS = 10                        # duals a path records at most (ids paths averaged ~52 uncapped)
 KINKS = 64
 VOTES_MIN, VOTES_MAX = 20, 1000
 SIGN_PASSES_MAX = 6                     # sign passes at most (the first votes, the others re-vote: recover_signs)
@@ -135,7 +136,7 @@ def one_path(seed):
     random.seed(seed)
     torch.manual_seed(seed)
     before = query_count()
-    bends = find_duals.find_dual_points()
+    bends = find_duals.find_dual_points(max_points=PATH_POINTS + 1)   # n + 1 bends make n duals
     # Each bend is a dual point.  The clustering wants it together with a point and the boundary normal on each side of
     # it: (point before, dual, point after, normal before, normal after).  The point / normal after one bend are the
     # point / normal before the next one.

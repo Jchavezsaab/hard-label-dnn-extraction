@@ -25,8 +25,8 @@ def refine_to_decision_boundary(forward, normal):
 
 
 # Find a critical point by walking along the hyperplane until
-# we run into a bend, then go a bit further and record that point
-def find_dual_points():
+# we run into a bend, then go a bit further and record that point.  Stops after max_points bends (None: no limit).
+def find_dual_points(max_points=None):
     middle_points = []
 
     start_point = boundary = original_boundary = find_decision_boundary()
@@ -36,7 +36,7 @@ def find_dual_points():
     rr = np.random.normal(size=IDIM)
     rr /= np.sum(rr**2)**.5
 
-    while True:
+    while max_points is None or len(middle_points) < max_points:
         # Make it a normal vector
 
         dist_to_start = np.sum((boundary - start_point)**2)**.5
