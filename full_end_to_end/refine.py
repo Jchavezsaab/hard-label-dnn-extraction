@@ -21,6 +21,11 @@ SEEN_MIN = 3                # fit_row: a prefix unit on at fewer kinks than this
 KNOWN_MOVED = 1e-6          # refine_neuron: a fit whose known weights move more than this (1 - |cos|) is rejected ...
 COMPLETE_ATTEMPTS = 3       #   and the completion tried again, this many times in all
 AGREE = 2                   # complete_row: equations beyond the unknowns that must agree exactly
+SUPPORT_MIN = 2             # complete_row: agreeing equations with its input on that every unknown weight needs, beyond
+                            #   those the solution was solved from
+RIVAL_FACTOR = 2            # complete_row: the agreeing set must have this many times the support of any rival one
+CONSENSUS_TOL = 1e-9        # complete_row: an equation agrees to this, relative to its kink (right ones ~1e-13 once the
+                            #   known weights are refined first, see refine_neuron; wrong ones 1e-4 and more)
 
 
 def extra_points(n_unknowns):
@@ -320,15 +325,24 @@ def on_known_hyperplane(prefix, rows, j, x):
     return min(piece, float(dist.min())) < 1e-9 * max(1.0, float(np.max(np.abs(x))))
 
 
-def consensus(E, y, rng, tries=200):
-    """The solution a of E a = y that the most equations agree with exactly (to round-off), and which ones do.
+def consensus(E, y, scale, rng, tries=5000):
+    """The solution a of E a = y that the most equations agree with exactly (to round-off), which ones do, how many
+    of those have each unknown's input on, and the same count for the best rival (a solution most of whose agreeing
+    equations are others: kinks of one other hyperplane in one region agree among themselves just as exactly).
 
     The kinks far_kink finds lie exactly on some hyperplane of the network, but often not on the neuron's own (a deeper
     neuron's, say): those equations are off by an arbitrary amount, the right ones agree to round-off.  Each try solves
-    a minimal set of equations and counts the rest that agree."""
+    a minimal set of equations and counts the rest that agree.  An equation whose input k is off says nothing about a_k
+    and agrees with any value of it, so a solution is ranked first by its least supported unknown (the agreeing
+    equations with that input on), then by the agreeing equations in all.
+
+    A right equation agrees only as well as the right-hand sides y, which come from the row's known weights (times
+    `scale`, the size of its kink's activations): refine_neuron refines those first, so that CONSENSUS_TOL can be tight."""
     m = E.shape[1]
-    tol = 1e-9 * max(1.0, float(np.max(np.abs(y))))
-    best = np.zeros(len(E), bool)
+    tol = CONSENSUS_TOL * np.asarray(scale)
+    on = np.abs(E) > 1e-9 * max(1.0, float(np.max(np.abs(E))))
+    # Support counts only the equations a solution was not solved from: those agree with it whatever it is.
+    found = {}                                   # every distinct agreeing set seen -> (score, support per unknown)
     for _ in range(tries):
         subset = rng.choice(len(E), m, replace=False)
         try:
@@ -336,11 +350,24 @@ def consensus(E, y, rng, tries=200):
         except np.linalg.LinAlgError:
             continue
         agree = np.abs(E @ a - y) <= tol         # not scaled with a: a wrong, large a would loosen it
-        if agree.sum() > best.sum():
-            best = agree
-    if not best.any():
-        return None, best
-    return np.linalg.lstsq(E[best], y[best], rcond=None)[0], best
+        beyond = agree.copy()
+        beyond[subset] = False
+        support = (on & beyond[:, None]).sum(axis=0)
+        score = (int(support.min()), int(agree.sum()))
+        key = agree.tobytes()
+        if key not in found or score > found[key][0]:
+            found[key] = (score, support)
+    if not found:
+        return None, np.zeros(len(E), bool), np.zeros(m, int), 0
+    ranked = sorted(found.items(), key=lambda item: item[1][0], reverse=True)
+    best, (_, support) = np.frombuffer(ranked[0][0], bool), ranked[0][1]
+    rival = 0
+    for key, (score, _) in ranked[1:]:
+        other = np.frombuffer(key, bool)
+        if (best & other).sum() < 0.5 * min(best.sum(), other.sum()):
+            rival = score[0]
+            break
+    return np.linalg.lstsq(E[best], y[best], rcond=None)[0], best, support, rival
 
 
 def complete_row(prefix, rows, j, rng, radii, e, max_tries=30000):
@@ -351,7 +378,8 @@ def complete_row(prefix, rows, j, rng, radii, e, max_tries=30000):
     finds where the boundary really bends: a point x* on some hyperplane.  If it is the neuron's own, row . [h(x*), 1] +
     sum over the missing inputs k of a_k h_k(x*) = 0, one linear equation in the missing weights a_k.  Kinks on a
     hyperplane we know (a prefix unit, another neuron of this layer) are dropped; those of deeper neurons are not
-    recognisable one by one, so equations are collected until AGREE more than the unknowns agree exactly (consensus).
+    recognisable one by one, so equations are collected until AGREE more than the unknowns agree exactly (consensus),
+    and every unknown has SUPPORT_MIN of them with its input on (the others agree with any value of it).
     Returns (row, stats, the prefix activations at the agreeing kinks); row is None if the missing weights could not be
     pinned down."""
     row = rows[j].copy()
@@ -361,20 +389,28 @@ def complete_row(prefix, rows, j, rng, radii, e, max_tries=30000):
     rejected = {}
     tried = 0
     dim = input_dim(prefix, rows)
-    a, agree = None, np.zeros(0, bool)
+    a, agree, support = None, np.zeros(0, bool), np.zeros(len(missing), int)
+    checked = 0                 # equations at the last consensus (it is run again as they grow by 5%)
 
     def reject(why):
         rejected[why] = rejected.get(why, 0) + 1
 
-    while agree.sum() < need and tried < max_tries:
+    rival = 0
+
+    def pinned():
+        return agree.sum() >= need and support.min() >= max(SUPPORT_MIN, RIVAL_FACTOR * rival)
+
+    while not pinned() and tried < max_tries:
         tried += 1
         radius = radii[tried % len(radii)]
         projected = project(prefix, rows, j, rng.normal(size=dim) * radius)
         if projected is None:
             reject("projection failed")
             continue
-        if not np.any(prefix_forward(prefix, projected[0])[0][missing] > 0):
-            reject("missing inputs all off at the start")         # no queries spent yet
+        # once the equations agree, spend queries only where an unknown still short of support has its input on
+        wanted = missing[support < SUPPORT_MIN] if agree.sum() >= need else missing
+        if not np.any(prefix_forward(prefix, projected[0])[0][wanted] > 0):
+            reject("wanted inputs all off at the start")          # no queries spent yet
             continue
         found = boundary_in_plane(prefix, rows, j, projected[0], projected[1], rng, reach=4.0 * radius)
         if found is None:
@@ -403,11 +439,13 @@ def complete_row(prefix, rows, j, rng, radii, e, max_tries=30000):
         eqs.append(h[missing])
         rhs.append(-(row[:-1] @ h + row[-1]))
         kinks.append(h)
-        if len(eqs) >= need:
-            a, agree = consensus(np.array(eqs), np.array(rhs), rng)
+        if len(eqs) >= need and len(eqs) - checked >= max(1, checked // 20):
+            checked = len(eqs)
+            a, agree, support, rival = consensus(np.array(eqs), np.array(rhs), 1 + np.linalg.norm(kinks, axis=1), rng)
 
-    info = dict(tried=tried, rejected=rejected, equations=len(eqs), agreeing=int(agree.sum()), missing=missing.tolist())
-    if agree.sum() < need:
+    info = dict(tried=tried, rejected=rejected, equations=len(eqs), agreeing=int(agree.sum()), missing=missing.tolist(),
+                support=support.tolist(), rival=rival)
+    if not pinned():
         return None, info, None
     S = np.linalg.svd(np.array(eqs)[agree], compute_uv=False)
     info["weights"] = a.tolist()
@@ -422,8 +460,12 @@ def input_dim(prefix, rows):
     return (prefix[0] if len(prefix) else rows).shape[1] - 1
 
 
-def mint_kinks(prefix, rows, j, K, rng, radii, e, max_tries):
-    """Mint up to K kinks on H_j.  Returns (H = prefix activations at the kinks, their bends, stats)."""
+def mint_kinks(prefix, rows, j, K, rng, radii, e, max_tries, off=()):
+    """Mint up to K kinks on H_j.  Returns (H = prefix activations at the kinks, their bends, stats).
+
+    off: prefix units that must be off at every kink (where they are on, a row with their weights still unknown is not
+    the neuron's hyperplane); checked at the start point, before any query, and again at the kink."""
+    off = np.asarray(off, dtype=int)
     H = []
     bends = []
     rejected = {}
@@ -443,6 +485,9 @@ def mint_kinks(prefix, rows, j, K, rng, radii, e, max_tries):
             continue
         x = projected[0]
         nu = projected[1]
+        if len(off) and np.any(prefix_forward(prefix, x)[0][off] > 0):
+            reject("unknown inputs on at the start")
+            continue
 
         found = boundary_in_plane(prefix, rows, j, x, nu, rng, reach=4.0 * radius)
         if found is None:
@@ -467,6 +512,9 @@ def mint_kinks(prefix, rows, j, K, rng, radii, e, max_tries):
         s_star, t_star, bend, resid = result
         x_star = x_B + s_star * nu + t_star * d
         h_star = prefix_forward(prefix, x_star)[0]         # layer 0: x_star itself
+        if len(off) and np.any(h_star[off] > 0):
+            reject("unknown inputs on at the kink")
+            continue
         H.append(h_star)
         bends.append(bend)
 
@@ -605,7 +653,16 @@ def refine_neuron(args):
     def attempt(rows):
         completed = anchors = None
         if len(prefix) and not known.all():
-            # weights the clustering set to 0: find them first, so that the kinks below may fall where those inputs are on
+            # weights the clustering set to 0: first refine the known ones from kinks where those inputs are off (there
+            # the row is the neuron's own), so that the completion's equations are exact to round-off and a tight
+            # tolerance tells the neuron's kinks from other hyperplanes'
+            H0, bends0, _ = mint_kinks(prefix, rows, j, K, rng, radii, e, max_tries=40 * K, off=np.flatnonzero(~known[:-1]))
+            if len(H0) >= extra_points(rows.shape[1] - int((~known).sum())):
+                v0, fit0 = fit_row(H0, bends0, rows[j])
+                if fit0["resid_rms"] <= BAD_FIT and fit0["sv_gap"] >= BAD_RANK:
+                    rows = rows.copy()
+                    rows[j] = v0
+            # then find the unknown ones, so that the kinks below may fall where those inputs are on
             row, completed, anchors = complete_row(prefix, rows, j, rng, radii, e)
             if row is None:
                 return None, dict(tried=0, kinks=0, rejected={}, kept_old=True, completed=completed)
