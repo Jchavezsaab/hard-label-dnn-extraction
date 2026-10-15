@@ -223,7 +223,7 @@ def solve(L, duals_dir):
                   clusters_file), flush=True)
         clusters = par_cluster.cluster_layer(L, duals_dir, prefix_files(L), WORKERS, WIDTHS[L], checkpoint=clusters_file,
                                              max_walks=MAX_WALKS_CLUSTERING, new_walk=extra_walk,
-                                             previous=state)
+                                             previous=state, last=L == HIDDEN_LAYERS - 1)
         record("layer%d/cluster" % L, started, 0, clusters=len(clusters))     # the duals carry their normals: no queries needed
         par_cluster.mark_complete(clusters_file)
 

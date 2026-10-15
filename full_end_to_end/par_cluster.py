@@ -21,6 +21,8 @@ multiprocessing.set_start_method('spawn', force=True)
 BASE_SEED = 10000
 MIN_CLUSTER = 3
 MIN_CLUSTER_ZEROED = 8    # a cluster whose solution sets weights to 0 must grow to this many duals before it counts
+MIN_CLUSTER_ZEROED_LAST = 5  # ... in the last hidden layer, where no deeper neuron can pose as one (cluster_layer)
+LAST_IDLE_WALKS = 4        # the last hidden layer stops adding walks after this many in a row found no cluster
 SPLIT_MIN = 0.25           # a cluster split by fewer than this fraction of the others' hyperplanes is a deeper neuron (disguised)
 PRUNE_SIZES = (3, 4, 6)    # a cluster whose members have no common hyperplane: subsets of these sizes are tried (prune)
 PRUNE_TRIALS = 40          #   this many of each size
@@ -43,12 +45,14 @@ WALKS_AT_START = 5         # walks the clustering starts with; more are added on
 # set in every worker by init_worker
 _worker_prefix = None
 _worker_layer = None
+_worker_last = False      # whether the layer is the last hidden one (see cluster_layer)
 _duals_dir = None
 
 
-def init_worker(layer, prefix_files, duals_dir):
-    global _worker_prefix, _worker_layer, _duals_dir
+def init_worker(layer, prefix_files, duals_dir, last=False):
+    global _worker_prefix, _worker_layer, _duals_dir, _worker_last
     _worker_layer = layer
+    _worker_last = last
     _worker_prefix = Prefix(prefix_files).to(DEVICE)
     _duals_dir = duals_dir
 
@@ -217,9 +221,10 @@ def process_single_candidate(args):
                     last_try_size = max(MIN_CLUSTER, len(maybe) + 1)
                     restart = j
                     continue
-                if np.any(soln == 0) and len(maybe) < MIN_CLUSTER_ZEROED:
+                zeroed_min = MIN_CLUSTER_ZEROED_LAST if _worker_last else MIN_CLUSTER_ZEROED
+                if np.any(soln == 0) and len(maybe) < zeroed_min:
                     # weights set to 0 leave few unknowns: a few duals of different neurons fit them by accident
-                    last_try_size = MIN_CLUSTER_ZEROED
+                    last_try_size = zeroed_min
                     continue
                 
                 biases = []
@@ -429,9 +434,14 @@ def walk_files(duals_dir):
 
 
 def cluster_layer(layer, duals_dir, prefix_files, num_workers, width, checkpoint=None, previous=None,
-                  max_walks=None, new_walk=None):
+                  max_walks=None, new_walk=None, last=False):
     """Returns the clusters found, at most `width` (the number of neurons in the layer) that are not deeper neurons in
     disguise (see disguised).
+
+    last: the layer is the last hidden one.  Then no deeper neuron exists to pose as one of its own, so nothing is
+    rejected as one (no disguised / restore), a cluster with weights set to 0 needs only MIN_CLUSTER_ZEROED_LAST duals,
+    and once LAST_IDLE_WALKS walks in a row added no cluster no more walks are made: the neurons still missing then
+    never change state where the walks go (run.solve leaves them out).
 
     The walks are taken in stages: the first WALKS_AT_START of them, each of their duals a seed with every dual of those
     walks a candidate member; then, while neurons are missing, one more walk at a time, each of ITS duals a seed with
@@ -471,7 +481,7 @@ def cluster_layer(layer, duals_dir, prefix_files, num_workers, width, checkpoint
         nonlocal executor
         if executor is None:
             executor = ProcessPoolExecutor(max_workers=num_workers, initializer=init_worker,
-                                           initargs=(layer, prefix_files, duals_dir))
+                                           initargs=(layer, prefix_files, duals_dir, last))
         return executor
 
     def have_walks(n):
@@ -509,7 +519,10 @@ def cluster_layer(layer, duals_dir, prefix_files, num_workers, width, checkpoint
 
     def drop_disguised():
         """Drop the clusters that look like deeper neurons, and give back rejected ones that no longer do (judged on
-        every dual of the walks on their hyperplane, so a rejection made on a few nearby duals can be undone)."""
+        every dual of the walks on their hyperplane, so a rejection made on a few nearby duals can be undone).  Not in
+        the last hidden layer: there is no deeper neuron there."""
+        if last:
+            return
         pool_h = loaded_h()
         dropped = [found_clusters[i] for i in disguised(found_clusters, prefix, pool_h)]
         for c in dropped:
@@ -596,11 +609,21 @@ def cluster_layer(layer, duals_dir, prefix_files, num_workers, width, checkpoint
         if have_walks(walks):
             # (on going on from a checkpoint, the seeds of every walk in use come back; those tried are skipped)
             print("   clustering over walks 1-%d" % walks, flush=True)
+            before = len(found_clusters)               # clusters before the stage (to count stages finding none)
             complete = run_stage(pool(), stage_seeds(0, walks), 0)
+            idle = 0
             while not complete:
                 drop_disguised()
-                if len(found_clusters) >= width or walks >= max_walks or not have_walks(walks + 1):
+                idle = idle + 1 if len(found_clusters) <= before else 0
+                if len(found_clusters) >= width or walks >= max_walks:
                     break
+                if last and idle >= LAST_IDLE_WALKS:
+                    print("   last hidden layer: %d stages in a row found no new cluster; the %d neurons missing are "
+                          "taken to never change state" % (idle, width - len(found_clusters)), flush=True)
+                    break
+                if not have_walks(walks + 1):
+                    break
+                before = len(found_clusters)
                 walks += 1
                 save()
                 print("   %d of %d clusters: adding walk %d (its duals as seeds against walks 1-%d)"
