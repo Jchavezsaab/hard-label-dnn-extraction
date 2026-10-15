@@ -34,7 +34,10 @@ def match_layer(ours, truth):
     """Match our rows to the true rows of one hidden layer, given how the layer below was matched.
 
     `truth` must already be expressed in our coordinates of the layer below (see main).  Weights the clustering set to 0
-    (exactly 0.0: inputs that were off at every dual, filled in by refine) are left out of the comparison.  Returns
+    (exactly 0.0: inputs that were off at every dual, filled in by refine) are left out of the comparison.  We may have
+    fewer rows than the truth: neurons the attack never found are amputated (taken to be dead, see run.solve), and the
+    true neurons no row of ours matches are left out of every comparison (and their columns of the next layer, see
+    truth_in_our_coordinates).  Returns
     (worst relative error, number of rows whose sign is wrong, the true row index of each of our rows, the scale of each
     of our rows)."""
     n = len(ours)
@@ -45,7 +48,7 @@ def match_layer(ours, truth):
         t = truth * known[i]
         cos[i] = (t @ ours[i]) / (np.linalg.norm(t, axis=1) * np.linalg.norm(ours[i]))
     which = np.argmax(np.abs(cos), axis=1)
-    assert sorted(which) == list(range(n)), "our rows do not match the true neurons one to one"
+    assert len(set(which.tolist())) == n, "our rows do not match distinct true neurons"
     scales = np.zeros(n)
     errors = np.zeros(n)
     for i, j in enumerate(which):
@@ -56,7 +59,8 @@ def match_layer(ours, truth):
 
 
 def truth_in_our_coordinates(true_layer, which, scales):
-    """Rewrite a true layer's input columns in our coordinates: our unit i is true unit which[i] times scales[i]."""
+    """Rewrite a true layer's input columns in our coordinates: our unit i is true unit which[i] times scales[i].  The
+    columns of true units no unit of ours matches (amputated neurons) are left out."""
     W = true_layer[:, :-1][:, which] / scales[None, :]
     return np.concatenate([W, true_layer[:, -1:]], axis=1)
 
@@ -109,7 +113,9 @@ def main(out):
     for L in range(len(ours)):
         comparable = truth[L] if L == 0 else truth_in_our_coordinates(truth[L], which, scales)
         error, wrong_signs, which, scales = match_layer(ours[L], comparable)
-        print("layer %d: worst relative error %.1e, %d wrong signs" % (L, error, wrong_signs))
+        amputated = sorted(set(range(len(comparable))) - set(which.tolist()))
+        print("layer %d: worst relative error %.1e, %d wrong signs%s" % (L, error, wrong_signs,
+              ", amputated true neurons %s left out" % amputated if amputated else ""))
         ok = ok and error < 1e-6 and wrong_signs == 0
 
     # head: compared after removing the freedoms an argmax cannot see

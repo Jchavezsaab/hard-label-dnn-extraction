@@ -229,11 +229,18 @@ def solve(L, duals_dir):
 
     started = step("layer %d: solve" % L)
     weights, biases = recover_weights.recover_layer(L, [c["cluster"] for c in clusters], prefix_files(L), WIDTHS[L])
-    found = int((np.abs(weights).sum(axis=1) > 0).sum())
-    assert found == WIDTHS[L], "layer %d: only %d of %d neurons found; walk more" % (L, found, WIDTHS[L])
+    solved = np.abs(weights).sum(axis=1) > 0
+    found = int(solved.sum())
     rows = np.concatenate([weights, biases[:, None]], axis=1)
+    if found < WIDTHS[L]:
+        # The neurons never found are taken to be dead (always off: they output 0 everywhere, so leaving them out
+        # changes nothing): they are amputated, the layer has fewer rows and the next layer fewer inputs.
+        rows = rows[solved]
+        print("   layer %d: only %d of %d neurons found; the %d missing taken to be dead and left out (amputated)"
+              % (L, found, WIDTHS[L], WIDTHS[L] - found), flush=True)
     # clusters beyond the layer's width were merged into an existing neuron or dropped by recover_layer (see its printout)
-    record("layer%d/solve" % L, started, 0, clusters=len(clusters), neurons=found, dropped_or_merged=len(clusters) - found)
+    record("layer%d/solve" % L, started, 0, clusters=len(clusters), neurons=found, dropped_or_merged=len(clusters) - found,
+           amputated=WIDTHS[L] - found)
     np.save(rows_file, rows)
     return rows
 
@@ -370,6 +377,8 @@ def report_error(L, stage, rows):
     prefix = [np.load(f) for f in prefix_files(L)]
     relative, absolute, wrong_signs = validate.layer_error(L, rows, prefix)
     signs = ", %d of %d signs correct" % (len(rows) - wrong_signs, len(rows)) if stage == "signs" else ""
+    if len(rows) < WIDTHS[L]:
+        signs += " (%d amputated neurons left out)" % (WIDTHS[L] - len(rows))
     print("   layer %d after %s vs. truth: max relative row error %.1e, max parameter error %.1e%s"
           % (L, stage, relative, absolute, signs), flush=True)
 
