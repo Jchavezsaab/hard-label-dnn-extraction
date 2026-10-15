@@ -479,16 +479,18 @@ def recover_neuron_sign(f, weights, biases, layerId, neuronId, Nmin=20, Nmax=100
     whether the vote reached the confidence CONFIDENT, the experiments).
 
     A vote that stopped early (out of dual points or of usable experiments) still decides by majority, but is reported
-    as not confident; with no votes at all, or a tie, there is nothing to decide and it raises.  stored: dual points
-    of the walk on the neuron's hyperplane, used first (see recoverSign)."""
+    as not confident; a tie keeps the guessed sign (+1, not confident); with no votes at all it raises.  stored: dual
+    points of the walk on the neuron's hyperplane, used first (see recoverSign)."""
     shape = (weights[0].shape[0],)
     duals = findDualPoints(f, weights, biases, layerId, neuronId, shape, 1e-14, 1e3)
     results = recoverSign(f, weights, biases, duals, layerId, neuronId, 1e-5, 1e-14, Nmin, Nmax, logFile=logFile,
                           stored=stored)
     votes_right = sum(r['right'] for r in results)
     votes_wrong = len(results) - votes_right
+    if not results:
+        raise ExperimentException("neuron %d of layer %d: no usable sign experiments" % (neuronId, layerId - 1))
     if votes_right == votes_wrong:
-        raise ExperimentException("neuron %d of layer %d: sign undecided, %d votes each way (no more usable experiments)"
-                                  % (neuronId, layerId - 1, votes_right))
+        print("Tie (%d votes each way): the guessed sign is kept" % votes_right, file=logFile)
+        return 1, False, results
     confident = getConfidence(votes_wrong, votes_right) < CONFIDENT and len(results) >= Nmin
     return 1 if votes_right > votes_wrong else -1, confident, results

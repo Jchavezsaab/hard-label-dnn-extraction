@@ -58,7 +58,7 @@ PATH_POINTS = 20                        # duals a path records at most (ids path
 # the commonest classes), or between a given pair of classes, so that rare classes' boundaries get paths too.
 PATH_STARTS = [None] + list(itertools.combinations(range(CLASSES), 2))
 KINKS = 64
-VOTES_MIN, VOTES_MAX = 20, 1000
+VOTES_MIN, VOTES_MAX = 20, 250            # sign experiments per neuron: at least / at most (then the majority decides)
 SIGN_PASSES_MAX = 6                     # sign passes at most (the first votes, the others re-vote: recover_signs)
 STORED_DIST = 1e-6                      # a walk dual within this distance of a row's hyperplane is a dual of that row (signs)
 HEAD_SEGMENTS, HEAD_HALVINGS = 2000, 50
