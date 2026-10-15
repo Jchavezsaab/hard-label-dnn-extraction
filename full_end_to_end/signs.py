@@ -423,6 +423,18 @@ def recoverSign(f, weights, biases, duals, layerId, neuronId, eps, tol, Nmin, Nm
     return results
 
 
+INFORMATIVE_MIN = 1e-6    # reassess: neuron j's column must be this far (relative) from the span of the others' columns
+
+
+def informative(M, others, j):
+    """Whether column j of M is not (to INFORMATIVE_MIN, relative) in the span of the columns `others` (a mask)."""
+    if not np.any(others):
+        return True
+    Mo = M[:, others]
+    coef = np.linalg.lstsq(Mo, M[:, j], rcond=None)[0]
+    return np.linalg.norm(M[:, j] - Mo @ coef) > INFORMATIVE_MIN * np.linalg.norm(M[:, j])
+
+
 def reassess(results, neuronId, estimates, Nmin=20):
     """Second look at a neuron's experiments, given estimates of every target-layer row's sign (no queries).
 
@@ -430,11 +442,21 @@ def reassess(results, neuronId, estimates, Nmin=20):
     estimates say which those are (estimates * z > 0).  So the probe is computed again as v = e_j pinv(M_A), M_A the
     columns of M of j and of the others estimated active: as close as possible to moving none of THOSE, instead of
     none of all the others.  Every experiment is voted again with the |cos| of its measured normals against this probe.
+
+    Only where that probe exists: if neuron j's column of M is (to INFORMATIVE_MIN) a combination of the columns of the
+    others in the normal (the active ones; with LeakyReLU all of them), every step that moves j moves them too, both
+    normals lie in their span and the experiment says nothing about the sign.  Deep in a network, with fewer units
+    active below than neurons active in the target layer, that is most experiments; re-voting them with a probe that
+    cannot exist only adds noise, so they keep their first vote (r['right']).
     Returns (sign, confident, votes); sign None on a tie."""
     votes_right = 0
     for r in results:
         active = np.asarray(estimates) * np.asarray(r['z']) > 0
         active[neuronId] = True
+        others = (active if activation.LEAKY_COEFF == 0 else np.ones(len(active), bool)) & (np.arange(len(active)) != neuronId)
+        if not informative(r['M'], others, neuronId):
+            votes_right += bool(r['right'])
+            continue
         if activation.LEAKY_COEFF == 0:
             columns = np.flatnonzero(active)
             v = np.linalg.pinv(r['M'][:, columns])[int(np.flatnonzero(columns == neuronId)[0])]

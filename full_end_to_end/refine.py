@@ -18,7 +18,10 @@ COLLINEAR = 256
 MIN_TANGENT = 0.1
 NO_BEND = 1e-6
 SECOND_KINK_STATIONS = 8
-SEEN_MIN = 3                # fit_row: a prefix unit on at fewer kinks than this keeps its old weight
+SEEN_MIN = 3                # fit_row: a prefix unit on at fewer kinks than this keeps its old weight ...
+OLD_ROW_TOL = 1e-6          # fit_row: kinks this close to the row it starts from (relative) are never trimmed
+SEEN_EXTRA = 16             #   refine_neuron: so up to this many more kinks are minted where such units are on ...
+SEEN_ROUNDS = 4             #   in at most this many rounds, and the row is fitted again
 KNOWN_MOVED = 1e-6          # refine_neuron: a fit whose known weights move more than this (1 - |cos|) is rejected ...
 COMPLETE_ATTEMPTS = 3       #   and the completion tried again, this many times in all
 AGREE = 2                   # complete_row: equations beyond the unknowns that must agree exactly
@@ -461,12 +464,15 @@ def input_dim(prefix, rows):
     return (prefix[0] if len(prefix) else rows).shape[1] - 1
 
 
-def mint_kinks(prefix, rows, j, K, rng, radii, e, max_tries, off=()):
+def mint_kinks(prefix, rows, j, K, rng, radii, e, max_tries, off=(), on=()):
     """Mint up to K kinks on H_j.  Returns (H = prefix activations at the kinks, their bends, stats).
 
     off: prefix units that must be off at every kink (where they are on, a row with their weights still unknown is not
-    the neuron's hyperplane); checked at the start point, before any query, and again at the kink."""
+    the neuron's hyperplane); checked at the start point, before any query, and again at the kink.  on: prefix units of
+    which at least one must be on at every kink (to see the weights of units the other kinks hardly saw); checked the
+    same way."""
     off = np.asarray(off, dtype=int)
+    on = np.asarray(on, dtype=int)
     H = []
     bends = []
     rejected = {}
@@ -488,6 +494,9 @@ def mint_kinks(prefix, rows, j, K, rng, radii, e, max_tries, off=()):
         nu = projected[1]
         if len(off) and np.any(prefix_forward(prefix, x)[0][off] > 0):
             reject("unknown inputs on at the start")
+            continue
+        if len(on) and not np.any(prefix_forward(prefix, x)[0][on] > 0):
+            reject("wanted inputs off at the start")
             continue
 
         found = boundary_in_plane(prefix, rows, j, x, nu, rng, reach=4.0 * radius)
@@ -516,6 +525,9 @@ def mint_kinks(prefix, rows, j, K, rng, radii, e, max_tries, off=()):
         if len(off) and np.any(h_star[off] > 0):
             reject("unknown inputs on at the kink")
             continue
+        if len(on) and not np.any(h_star[on] > 0):
+            reject("wanted inputs off at the kink")
+            continue
         H.append(h_star)
         bends.append(bend)
 
@@ -541,9 +553,13 @@ def residuals(M, v):
 
 
 def trim_against_old_row(M, old, floor):
-    """First trim: drop the kinks far (20x the median) from the plane of the row we started from."""
+    """First trim: drop the kinks far (20x the median) from the plane of the row we started from.
+
+    Never those within OLD_ROW_TOL (relative to the kink's size) of it: the row we start from is only as good as the
+    clustering's ~1e-7, and where it is off (a weight of a unit the clustering's duals hardly saw) the kinks that show it
+    are exactly the ones that correct it.  The kinks of other hyperplanes lie much further off."""
     r_old = np.abs(M @ old)
-    keep = r_old <= max(20 * float(np.median(r_old)), floor)
+    keep = r_old <= np.maximum(max(20 * float(np.median(r_old)), floor), OLD_ROW_TOL * np.linalg.norm(M, axis=1))
     if keep.sum() < extra_points(M.shape[1]):
         keep = np.ones(len(M), bool)
     return keep
@@ -677,6 +693,22 @@ def refine_neuron(args):
             info["kept_old"] = True
             return None, info
         v, fit = fit_row(H, bends, rows[j])
+        for _ in range(SEEN_ROUNDS):
+            # Units (almost) never on at the kinks keep their old weights, only as good as the clustering's or the
+            # completion's: mint more kinks where they are on, on the fitted hyperplane, and fit again with all of them.
+            short = fit.get("kept_weights", [])
+            if not short:
+                break
+            guide = rows.copy()
+            guide[j] = v
+            # (most tries end at the start point, where those units are off, before any query: allow many)
+            H2, bends2, _ = mint_kinks(prefix, guide, j, SEEN_EXTRA, rng, radii, e, max_tries=1000 * SEEN_EXTRA, on=short)
+            if not len(H2):
+                break
+            H, bends = np.vstack([H, H2]), np.r_[bends, bends2]
+            v, fit = fit_row(H, bends, rows[j])
+            info["seen_extra"] = info.get("seen_extra", 0) + len(H2)
+        info["kinks"] = len(H)
         kept = [k for k in fit.get("kept_weights", []) if anchors is not None and np.all(anchors[:, k] > 0)]
         if kept:
             # no kink had these inputs on, so fit_row kept complete_row's weights, which were found against the

@@ -313,7 +313,7 @@ def one_neuron_sign(job):
     with open(os.path.join(OUT, "logs", "signs_layer%d_neuron%d.log" % (L, neuron)), "w") as log:
         sign, confident, votes = signs.recover_neuron_sign(label, weights, biases, L + 1, neuron, VOTES_MIN, VOTES_MAX, log,
                                                            stored=stored)
-    experiments = [{key: r[key] for key in ('M', 'z', 'mON', 'mOFF')} for r in votes]     # for the second pass
+    experiments = [{key: r[key] for key in ('M', 'z', 'mON', 'mOFF', 'right')} for r in votes]     # for the later passes
     from_walk = sum(r['stored'] for r in votes)
     return (sign, confident, len(votes), experiments, from_walk), query_count() - before
 
