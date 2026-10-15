@@ -356,7 +356,21 @@ def is_duplicate(found_clusters, result, cos=0.8):
     return False
 
 
-def disguised(clusters, prefix):
+def split_by(c, others, prefix, pool_h=None):
+    """How many of the hyperplanes of `others` split the duals of cluster c (some on either side).
+
+    pool_h: the prefix outputs of every dual of the walks loaded; those on c's hyperplane count as c's duals too.  A
+    cluster's own members may be a few duals close together, which no hyperplane splits even for a real neuron."""
+    H = prefix.forward(torch.tensor(np.array([d[1] for d in c["cluster"]])).to(DEVICE)).cpu().numpy()
+    if pool_h is not None and len(pool_h):
+        H = np.vstack([H, pool_h[np.abs(pool_h @ c["weight"] + c["bias"]) < 1e-5]])
+    W = np.array([o["weight"] for o in others])
+    b = np.array([o["bias"] for o in others])
+    side = H @ W.T + b > 0
+    return int(np.sum(side.any(axis=0) & ~side.all(axis=0)))
+
+
+def disguised(clusters, prefix, pool_h=None):
     """Indices of the clusters whose duals are split by fewer than SPLIT_MIN of the other clusters' hyperplanes.
 
     Wherever this layer's on/off pattern stays the same, the layer is one linear map, so a deeper neuron's zero set is a
@@ -364,18 +378,15 @@ def disguised(clusters, prefix):
     this layer (and so, once weights are set to 0 and few unknowns are left, can duals of several neurons from few
     regions).  The duals of a real neuron of this layer are spread over many regions of its own layer, on both sides of
     most of the other neurons' hyperplanes.  Not all of them: the other clusters may include such impostors, or be
-    inexact where they have weights set to 0, so a cluster is not required to lie in one region of all of them."""
+    inexact where they have weights set to 0, so a cluster is not required to lie in one region of all of them.
+    A deeper neuron's zero set is that flat hyperplane only inside its one region, so the duals of the walks on it
+    (pool_h, see split_by) stay in that region; a real neuron's spread wherever it goes."""
     found = []
     for i, c in enumerate(clusters):
         others = [o for j, o in enumerate(clusters) if j != i]
         if len(c["cluster"]) < 2 or not others:
             continue
-        H = prefix.forward(torch.tensor(np.array([d[1] for d in c["cluster"]])).to(DEVICE)).cpu().numpy()
-        W = np.array([o["weight"] for o in others])
-        b = np.array([o["bias"] for o in others])
-        side = H @ W.T + b > 0
-        split = np.sum(side.any(axis=0) & ~side.all(axis=0))
-        if split < SPLIT_MIN * len(others):
+        if split_by(c, others, prefix, pool_h) < SPLIT_MIN * len(others):
             found.append(i)
     return found
 
@@ -474,6 +485,8 @@ def cluster_layer(layer, duals_dir, prefix_files, num_workers, width, checkpoint
             files.append(new_walk(len(files) + 1))
         return len(files) >= n
 
+    walk_h = {}                # walk file -> prefix outputs of its duals (not on an earlier layer's hyperplane)
+
     def stage_seeds(first, last):
         """The duals of walks first..last-1 (0-based) as seeds: (dual, index of its walk, prefix output)."""
         out = []
@@ -481,18 +494,41 @@ def cluster_layer(layer, duals_dir, prefix_files, num_workers, width, checkpoint
             x = pickle.load(open(os.path.join(duals_dir, files[k]), "rb"))
             random.Random(BASE_SEED).shuffle(x)
             x = reject_on_earlier_layer(x, prefix, layer)
-            if x:
-                H = prefix.forward(torch.tensor(np.array([d[1] for d in x])).to(DEVICE)).cpu().numpy()
-                out.extend(zip(x, [k] * len(x), H))
+            H = (prefix.forward(torch.tensor(np.array([d[1] for d in x])).to(DEVICE)).cpu().numpy() if x
+                 else np.zeros((0, prefix.out_dim)))
+            walk_h[files[k]] = H
+            out.extend(zip(x, [k] * len(x), H))
         return out
 
+    def loaded_h():
+        """The prefix outputs of every dual of the walks in use (for the deeper-neuron test: disguised)."""
+        for k in range(walks):
+            if files[k] not in walk_h:
+                stage_seeds(k, k + 1)
+        return np.vstack([walk_h[files[k]] for k in range(walks)])
+
     def drop_disguised():
-        dropped = disguised(found_clusters, prefix)
-        for i in reversed(dropped):
+        """Drop the clusters that look like deeper neurons, and give back rejected ones that no longer do (judged on
+        every dual of the walks on their hyperplane, so a rejection made on a few nearby duals can be undone)."""
+        pool_h = loaded_h()
+        dropped = [found_clusters[i] for i in disguised(found_clusters, prefix, pool_h)]
+        for c in dropped:
             print("   dropped cluster of %d duals: on one side of most of the others' hyperplanes, a deeper neuron"
-                  % len(found_clusters[i]['cluster']), flush=True)
-            rejected.append(found_clusters.pop(i))
-        if dropped:
+                  % len(c['cluster']), flush=True)
+            del found_clusters[next(i for i, o in enumerate(found_clusters) if o is c)]
+            rejected.append(c)
+        restored = []
+        for c in list(rejected):
+            if len(found_clusters) >= width or any(c is d for d in dropped):
+                continue
+            others = [o for o in found_clusters if o is not c]
+            if others and split_by(c, others, prefix, pool_h) >= SPLIT_MIN * len(others)                     and not is_duplicate(found_clusters, c):
+                del rejected[next(i for i, o in enumerate(rejected) if o is c)]
+                found_clusters.append(c)
+                restored.append(c)
+                print("   restored a rejected cluster of %d duals: the walks' duals on its hyperplane are spread, a "
+                      "neuron of this layer" % len(c['cluster']), flush=True)
+        if dropped or restored:
             save()
 
     def take(result):
