@@ -90,15 +90,15 @@ class Prefix(nn.Module):
 
     @torch.no_grad
     def forward_nolastrelu(self, x):
-        # pre-relu activations of every prefix layer, stacked (L, N, D); used to
-        # reject duals whose zero neuron lives on an earlier layer
+        # pre-relu activations of every prefix layer, side by side (N, sum of the layers' widths: they may differ once
+        # neurons were amputated, see run.solve); used to reject duals whose zero neuron lives on an earlier layer
         x = x.view(-1, IDIM)
         pre = []
         for layer in self.fcs:
             x = layer(x)
             pre.append(x)
             x = relu_torch(x)
-        return torch.stack(pre)
+        return torch.cat(pre, dim=1)
 
 def is_consistent_help(points, prefix, layer=0, do_return_soln=False, allow_close=False):
     samples = []

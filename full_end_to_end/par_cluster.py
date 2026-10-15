@@ -57,7 +57,7 @@ def reject_on_earlier_layer(x, prefix, layer):
     """Filter out points that are rejected by earlier layers"""
     if layer == 0: return x
     out = prefix.forward_nolastrelu(torch.tensor(np.stack([z[1] for z in x])).to(DEVICE)).cpu()
-    reject = torch.any(torch.abs(out) < 1e-5, (0,2))
+    reject = torch.any(torch.abs(out) < 1e-5, dim=1)
     x = [z for z, r in zip(x, reject) if not r]
     return x
 
