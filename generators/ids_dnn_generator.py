@@ -12,10 +12,11 @@ non-expanding network, every width <= the one below it; the script refuses anyth
 The model sees preprocessed features: x -> sign(x) log(1 + |x|) (byte counts span many orders of magnitude), then
 standardized, then every usable one of them (or the FEATURES most class-discriminative ones).  That preprocessing is NOT part of the .keras file,
 which holds only Input -> [Dense, ReLU] x layers -> Dense (logits); it is written next to it as <model>.preprocess.json.
+With --leaky SLOPE (not 0) every ReLU is a LeakyReLU with that negative slope instead.
 The network is saved exactly as trained (no pruning, no folding).
 
 Usage: ids_dnn_generator.py [--features 0] [--hidden 64,64,64,64] [--epochs 30] [--per-class 200000] [--full]
-                            [--data-home DIR] [--out PATH]
+                            [--leaky 0] [--data-home DIR] [--out PATH]
 """
 import argparse
 import json
@@ -85,12 +86,21 @@ def select_features(Z, y, names, n):
     return cols, [names[c] for c in cols]
 
 
-def dnn(input_dim, hidden_sizes, num_classes):
-    """Input -> [Dense, ReLU] per hidden layer -> Dense logits, as in dnn_generator.py."""
+def leaky_relu(slope):
+    """LeakyReLU with the given negative slope (Keras 3 calls it negative_slope, Keras 2 alpha)."""
+    try:
+        return layers.LeakyReLU(negative_slope=slope)
+    except TypeError:
+        return layers.LeakyReLU(alpha=slope)
+
+
+def dnn(input_dim, hidden_sizes, num_classes, leaky=0.0):
+    """Input -> [Dense, ReLU] per hidden layer -> Dense logits, as in dnn_generator.py (LeakyReLU with slope `leaky`
+    instead of ReLU when leaky != 0)."""
     hidden_layers = []
     for n in hidden_sizes:
         hidden_layers.append(layers.Dense(n))
-        hidden_layers.append(layers.ReLU())
+        hidden_layers.append(leaky_relu(leaky) if leaky else layers.ReLU())
     return models.Sequential([layers.Input(shape=(input_dim,))] + hidden_layers + [layers.Dense(num_classes)])
 
 
@@ -102,6 +112,8 @@ def main():
     parser.add_argument("--per-class", type=int, default=200000, help="cap on the flows kept per class")
     parser.add_argument("--full", action="store_true", help="the full 4.9M connections instead of the 10% subset")
     parser.add_argument("--data-home", help="where scikit-learn caches the dataset (default ~/scikit_learn_data)")
+    parser.add_argument("--leaky", type=float, default=0.0,
+                        help="negative slope of LeakyReLU activations throughout (default 0: plain ReLU)")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--out")
     args = parser.parse_args()
@@ -134,7 +146,7 @@ def main():
     counts = np.bincount(y[train], minlength=len(CLASSES))
     class_weight = {k: len(train) / (len(CLASSES) * counts[k]) for k in range(len(CLASSES))}
 
-    model = dnn(len(cols), hidden, len(CLASSES))
+    model = dnn(len(cols), hidden, len(CLASSES), args.leaky)
     model.compile(optimizer=optimizers.Adam(1e-3),
                   loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
                   metrics=["accuracy"])
@@ -150,9 +162,9 @@ def main():
         mask = y[test] == k
         print("  %-10s recall %.4f  (%d flows)" % (c, (predicted[mask] == k).mean(), mask.sum()))
 
-    out = args.out or os.path.join(HERE, "..", "data", "kddcup99_%d_%s_%d_float64.keras" % (
+    out = args.out or os.path.join(HERE, "..", "data", "kddcup99_%d_%s_%d%s_float64.keras" % (
         len(cols), "x".join(map(str, hidden)) if len(set(hidden)) > 1 else "%dx%d" % (hidden[0], len(hidden)),
-        len(CLASSES)))
+        len(CLASSES), "_leaky%g" % args.leaky if args.leaky else ""))
     model.save(out)
     json.dump(dict(classes=CLASSES, features=names,
                    transform="one-hot protocol_type / service / flag (column 'name=value'), then "
