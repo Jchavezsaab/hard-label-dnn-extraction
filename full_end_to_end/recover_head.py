@@ -14,6 +14,8 @@
 import time
 import numpy as np
 
+from activation import relu
+
 # ----------------------------------------------------------------------------------------------------------------------------
 # the extracted network, as numpy
 # ----------------------------------------------------------------------------------------------------------------------------
@@ -23,7 +25,7 @@ def forward_hidden(layers, X):
     for layer in layers:
         W = layer[:, :-1]
         b = layer[:, -1]
-        H = np.maximum(H @ W.T + b, 0.0)
+        H = relu(H @ W.T + b)
     return H
 
 

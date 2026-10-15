@@ -6,6 +6,8 @@ import scipy.linalg
 import torch
 import torch.nn as nn
 from utils import IDIM, DEVICE, MathIsHard
+import activation
+from activation import relu_torch
 
 def intersect(left, right, nleft, nright):
     A = np.vstack((nleft, nright))
@@ -63,7 +65,11 @@ class Prefix(nn.Module):
         self.double()
 
     def relu_around(self, x):
-        mask = (x[:1]>=0).to(torch.float64)
+        # the activation of every row in the on/off pattern of the first one (x[0]): each unit stays linear around it
+        if activation.LEAKY_COEFF == 0:
+            mask = (x[:1]>=0).to(torch.float64)
+        else:
+            mask = torch.where(x[:1] >= 0, 1.0, activation.LEAKY_COEFF).to(torch.float64)
         return x * mask
         
     @torch.no_grad
@@ -79,7 +85,7 @@ class Prefix(nn.Module):
         x = x.view(-1, IDIM)
         if len(self.fcs) == 0: return x
         for layer in self.fcs:
-            x = nn.functional.relu(layer(x))
+            x = relu_torch(layer(x))
         return x
 
     @torch.no_grad
@@ -91,7 +97,7 @@ class Prefix(nn.Module):
         for layer in self.fcs:
             x = layer(x)
             pre.append(x)
-            x = nn.functional.relu(x)
+            x = relu_torch(x)
         return torch.stack(pre)
 
 def is_consistent_help(points, prefix, layer=0, do_return_soln=False, allow_close=False):

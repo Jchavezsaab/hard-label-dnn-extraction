@@ -66,6 +66,7 @@ HEAD_SEGMENTS, HEAD_HALVINGS = 2000, 50
 for var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
     os.environ[var] = "1"           # parallelism comes from WORKERS processes, each single-threaded
 from oracle import query_count, label  # noqa: E402
+import activation  # noqa: E402  (after set_model: the model's LEAKY_COEFF)
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -270,7 +271,7 @@ def stored_duals(L, refined):
     for rb in prefix:
         z = h @ rb[:, :-1].T + rb[:, -1]
         usable &= np.all(np.abs(z) >= 1e-5, axis=1)     # as par_cluster.reject_on_earlier_layer
-        h = np.maximum(z, 0)
+        h = activation.relu(z)
     z = h @ refined[:, :-1].T + refined[:, -1]            # (duals, rows)
     stored = []
     for j in range(len(refined)):
@@ -282,8 +283,8 @@ def stored_duals(L, refined):
             A = np.eye(len(x))
             for rb in prefix:
                 pre = rb[:, :-1] @ x + rb[:, -1]
-                A = (rb[:, :-1] @ A) * (pre > 0)[:, None]
-                x = np.maximum(pre, 0)
+                A = (rb[:, :-1] @ A) * activation.slope(pre)[:, None]
+                x = activation.relu(pre)
             if abs(z[i, j]) < STORED_DIST * np.linalg.norm(A.T @ refined[j, :-1]):
                 mine.append(duals[i])
             if len(mine) >= VOTES_MAX:
@@ -420,9 +421,10 @@ def check_out_dir():
 
 
 def main():
-    assert all(kind == "relu" for kind in ARCHITECTURE["activations"]),         "the attack targets ReLU networks; %s has hidden activations %s" % (MODEL, ARCHITECTURE["activations"])
-    print("== target %s: %d inputs, hidden widths %s, %d classes -> %s" % (
-        MODEL, ARCHITECTURE["input_dim"], WIDTHS, CLASSES, OUT), flush=True)
+    assert all(kind in ("relu", "leaky_relu") for kind in ARCHITECTURE["activations"]),         "the attack targets (leaky) ReLU networks; %s has hidden activations %s" % (MODEL, ARCHITECTURE["activations"])
+    print("== target %s: %d inputs, hidden widths %s, %d classes, %s -> %s" % (
+        MODEL, ARCHITECTURE["input_dim"], WIDTHS, CLASSES,
+        "LeakyReLU(%g)" % activation.LEAKY_COEFF if activation.LEAKY_COEFF else "ReLU", OUT), flush=True)
     check_out_dir()
     duals_dir = walk()
     for L in range(HIDDEN_LAYERS):

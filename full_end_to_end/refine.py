@@ -9,6 +9,7 @@ for _var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
 import numpy as np  # noqa: E402
 
 from oracle import label, query_count  # noqa: E402  -- the only access to the target
+from activation import relu, slope  # noqa: E402
 
 EPS = np.finfo(np.float64).eps
 BAD_FIT = 1e-10
@@ -54,7 +55,7 @@ def prefix_forward(prefix, x):
         G = W @ A                                       # input-space gradient of every unit's pre-activation
         grad_norm = np.maximum(np.linalg.norm(G, axis=1), 1e-300)
         margin = min(margin, float(np.min(np.abs(z) / grad_norm)))
-        on = (z > 0).astype(np.float64)
+        on = slope(z)                                   # 1 / 0 for ReLU, 1 / LEAKY_COEFF for LeakyReLU
         A = on[:, None] * G
         c = on * (W @ c + b)
         h = on * z
@@ -68,7 +69,7 @@ def pattern(prefix, x):
     for rb in prefix:
         z = rb[:, :-1] @ x + rb[:, -1]
         pat.append(z > 0)
-        x = np.maximum(z, 0)
+        x = relu(z)
     if not pat:
         return np.zeros(0, bool)
     return np.concatenate(pat)
@@ -120,7 +121,7 @@ def ray_to_border(prefix, x, d):
         ahead = ti[(ti > 0) & np.isfinite(ti)]
         if len(ahead):
             t = min(t, float(ahead.min()))
-        on = (z > 0).astype(np.float64)
+        on = slope(z)
         A = on[:, None] * G
         h = on * z
     return t

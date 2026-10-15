@@ -5,12 +5,14 @@
 # M the local matrix from the input to the target layer: the input step that moves neuron j and, where M has full rank,
 # no other neuron of the target layer.  The decision boundary's normal is measured on both sides of the neuron's
 # hyperplane; where the neuron is off the boundary ignores it and its normal is orthogonal to v, where it is on it is
-# not.  The side whose boundary makes the larger angle with v's hyperplane (|cos(normal, v)| larger) gets the vote for
-# being the on side.  Dual points are taken wherever they fall: M may be singular there, and v then also moves other
+# not.  (With LeakyReLU, where the neuron is off the boundary still sees v, but scaled by LEAKY_COEFF < 1.)  The side whose
+# boundary makes the larger angle with v's hyperplane (|cos(normal, v)| larger) gets the vote for being the on side.  Dual points are taken wherever they fall: M may be singular there, and v then also moves other
 # neurons of the target layer, so a single experiment can be wrong; the majority over many dual points decides.
 # Weights are in keras layout: weights[l] is (in, out), x @ W + b.
 import time
 import numpy as np
+
+import activation
 
 
 CONFIDENT = -3.6889       # log of the chance that the majority is wrong at which the vote stops: exp(-3.6889) = 2.5%
@@ -61,7 +63,10 @@ def getLocalMatrixAndBias(weights, biases, x0):
         x = np.matmul(x0i, M) + b
         for layer_id in range(1, len(weights)):
             M_hat = weights[layer_id].copy()
-            M_hat[x < 0] = 0
+            if activation.LEAKY_COEFF == 0:
+                M_hat[x < 0] = 0
+            else:
+                M_hat[x < 0] *= activation.LEAKY_COEFF      # an off unit still passes LEAKY_COEFF of its input on
             x = np.matmul(x, M_hat) + biases[layer_id]
             b = np.matmul(b, M_hat) + biases[layer_id]
             M = np.matmul(M, M_hat)
@@ -105,7 +110,10 @@ def getHiddenVector(weights, biases, l, x, relu=False):
     for i in range(l):
         y = np.matmul(y, weights[i]) + biases[i]
         if (i < (l - 1)) or relu:
-            y *= (y > 0)
+            if activation.LEAKY_COEFF == 0:
+                y *= (y > 0)
+            else:
+                y = activation.relu(y)
     return y
 
 
@@ -147,7 +155,10 @@ def getLocalMatrixAndBias(weights, biases, x0):
         x = np.matmul(x0i, M) + b
         for layer_id in range(1, len(weights)):
             M_hat = weights[layer_id].copy()
-            M_hat[x < 0] = 0
+            if activation.LEAKY_COEFF == 0:
+                M_hat[x < 0] = 0
+            else:
+                M_hat[x < 0] *= activation.LEAKY_COEFF      # an off unit still passes LEAKY_COEFF of its input on
             x = np.matmul(x, M_hat) + biases[layer_id]
             b = np.matmul(b, M_hat) + biases[layer_id]
             M = np.matmul(M, M_hat)
@@ -165,8 +176,11 @@ def toggleStatesEqual(weights, biases, x0, x1):
         x00 = x00.flatten() @ weights[i] + biases[i].flatten()
         x11 = x11.flatten() @ weights[i] + biases[i].flatten()
         if not np.all(np.sign(x00) == np.sign(x11)): return False
-        x00[x00 < 0] = 0
-        x11[x11 < 0] = 0
+        if activation.LEAKY_COEFF == 0:
+            x00[x00 < 0] = 0
+            x11[x11 < 0] = 0
+        else:
+            x00, x11 = activation.relu(x00), activation.relu(x11)
     return True
 
 def findDecissionBoundary(f, x0, dx0, tol, inf):
@@ -421,8 +435,14 @@ def reassess(results, neuronId, estimates, Nmin=20):
     for r in results:
         active = np.asarray(estimates) * np.asarray(r['z']) > 0
         active[neuronId] = True
-        columns = np.flatnonzero(active)
-        v = np.linalg.pinv(r['M'][:, columns])[int(np.flatnonzero(columns == neuronId)[0])]
+        if activation.LEAKY_COEFF == 0:
+            columns = np.flatnonzero(active)
+            v = np.linalg.pinv(r['M'][:, columns])[int(np.flatnonzero(columns == neuronId)[0])]
+        else:
+            # LeakyReLU: an inactive neuron still enters the normal, at LEAKY_COEFF of its weight, so instead of leaving
+            # it out its column is scaled by that (v = e_j pinv(M D), D the estimated slopes; ReLU's D drops columns)
+            d = np.where(active, 1.0, activation.LEAKY_COEFF)
+            v = np.linalg.pinv(r['M'] * d)[neuronId]
         cos = {side: abs(r['m' + side] @ v) / (np.linalg.norm(r['m' + side]) * np.linalg.norm(v)) for side in ('ON', 'OFF')}
         votes_right += cos['ON'] > cos['OFF']
     votes_wrong = len(results) - votes_right

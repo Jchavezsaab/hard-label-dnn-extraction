@@ -13,6 +13,7 @@ import multiprocessing
 import numpy as np
 import torch
 from utils import DEVICE
+import activation
 from recover_weights import is_consistent, Prefix
 
 multiprocessing.set_start_method('spawn', force=True)
@@ -254,9 +255,13 @@ def input_normal(prefix, x0, w):
     for linear in prefix.fcs:
         W = linear.weight.detach().cpu().numpy()
         z = W @ x + linear.bias.detach().cpu().numpy()
-        on = z > 0
-        A = (W @ A) * on[:, None]
-        x = np.where(on, z, 0.0)
+        if activation.LEAKY_COEFF == 0:
+            on = z > 0
+            A = (W @ A) * on[:, None]
+            x = np.where(on, z, 0.0)
+        else:
+            A = (W @ A) * activation.slope(z)[:, None]
+            x = activation.relu(z)
     n = A.T @ w
     return n / max(np.linalg.norm(n), 1e-300)
 
@@ -329,7 +334,11 @@ def disengaged(result, prefix):
     """Whether the cluster's row puts next to none of its weight on the inputs that are on at one of its duals.
 
     w . h + b = 0 holds trivially wherever every input the row weighs is off (and its bias is ~0): such a row fits the
-    duals of any neurons there.  A real neuron is zero at its own duals through its weights on the inputs that are on."""
+    duals of any neurons there.  A real neuron is zero at its own duals through its weights on the inputs that are on.
+    With LeakyReLU an off input is not 0 (it passes LEAKY_COEFF of its pre-activation), so nothing holds trivially and
+    no row is disengaged."""
+    if activation.LEAKY_COEFF != 0:
+        return False
     w = result["weight"] / np.linalg.norm(result["weight"])
     H = prefix.forward(torch.tensor(np.array([d[1] for d in result["cluster"]])).to(DEVICE)).cpu().numpy()
     return bool(np.any(np.sqrt(((H > 1e-4) * w ** 2).sum(axis=1)) < ENGAGED_MIN))

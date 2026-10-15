@@ -5,6 +5,7 @@
 import io
 import json
 import os
+import sys
 import zipfile
 
 import numpy as np
@@ -24,6 +25,8 @@ def set_model(path):
     global _NET
     os.environ["ORACLE_MODEL"] = os.path.abspath(path)
     _NET = None
+    if "activation" in sys.modules:             # already imported for another model: give it this model's slope
+        sys.modules["activation"].LEAKY_COEFF = leaky_coeff()
 
 
 def _load_weights():
@@ -80,6 +83,15 @@ def architecture():
         classes=layers[-1][0].shape[1],
         activations=[kind for kind, _ in activations],
     )
+
+
+def leaky_coeff():
+    """The negative slope shared by every hidden activation: 0 for ReLU, a for LeakyReLU(a).  Public, like the shape:
+    the attacker is assumed to know the activation."""
+    _, activations = _net()
+    slopes = {slope if kind == "leaky_relu" else 0.0 for kind, slope in activations}
+    assert len(slopes) == 1, "%s: the hidden activations do not share one negative slope: %s" % (model_path(), activations)
+    return slopes.pop()
 
 
 def _logits(x):
